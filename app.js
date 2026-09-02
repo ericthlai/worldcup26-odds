@@ -1466,9 +1466,12 @@ if (!WC || !ENG) {
     render(h(App), document.getElementById('app'));
   } catch (e) {
     console.error('WCO mount error:', e && e.stack || e);
-    document.getElementById('app').innerHTML =
-      '<pre style="padding:20px;color:#A23227;white-space:pre-wrap;font:12px monospace">mount error: ' +
-      String(e && e.stack || e) + '</pre>';
+    var appEl = document.getElementById('app');
+    appEl.replaceChildren();
+    var pre = document.createElement('pre');
+    pre.style.cssText = 'padding:20px;color:#A23227;white-space:pre-wrap;font:12px monospace';
+    pre.textContent = 'mount error: ' + String(e && e.stack || e);
+    appEl.appendChild(pre);
   }
 }
 
