@@ -144,14 +144,13 @@
   // invariant in the test suite.
   var ELO = {
     arg:2105, fra:2055, esp:2114, eng:2025, bra:2000, por:2005, ned:1975, bel:1945,
-    ger:1945, cro:1900, ita:1900 /*n/a*/, uru:1895, col:1875, mar:1890, usa:1800,
+    ger:1945, cro:1900, uru:1895, col:1875, mar:1890, usa:1800,
     sui:1800, jpn:1830, mex:1790, sen:1785, irn:1765, ecu:1790, kor:1750, aus:1740,
     egy:1735, civ:1745, nor:1850, swe:1700, aut:1770, par:1695, can:1720, tur:1800,
     nzl:1560, pan:1600, qat:1560, ksa:1550, irq:1580, gha:1640, cze:1720, sco:1760,
     alg:1740, uzb:1620, cod:1630, jor:1560, tun:1655, cpv:1560, cuw:1480, rsa:1690,
     bih:1690, hai:1450
   };
-  delete ELO.ita; // not in this tournament; placeholder guard removed.
 
   // ---- STARS: 1..5 marquee tier (UI only; not consumed by the sim) ---------
   var STARS = {
