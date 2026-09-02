@@ -2,6 +2,8 @@
 
 **Live demo:** https://ericthlai.github.io/worldcup26-odds/
 
+[![CI](https://github.com/ericthlai/worldcup26-odds/actions/workflows/ci.yml/badge.svg)](https://github.com/ericthlai/worldcup26-odds/actions/workflows/ci.yml)
+
 A static, no-build web app that answers one question: **which teams might play where, when — and with what probability — so you can decide which match tickets to buy.**
 
 It runs a Monte Carlo simulation of the full 48-team tournament in the browser, blends it with live Polymarket prediction-market odds, and surfaces specific matchup/venue/date probabilities (e.g. *"Messi vs Ronaldo, QF, Arrowhead Stadium / Kansas City, 7/11 — 11%"*).
