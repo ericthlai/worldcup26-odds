@@ -11,3 +11,8 @@ Thumbs.db
 # scratch
 _*.js
 .claude/
+
+# env files
+.env
+.env.*
+!.env.example
