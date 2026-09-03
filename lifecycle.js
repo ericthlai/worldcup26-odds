@@ -26,21 +26,72 @@
 
   function isArchiveMode(now) {
     var ms = toMillis(now);
-    return Number.isFinite(ms) && ms >= ARCHIVE_START_MS;
+    return !Number.isFinite(ms) || ms >= ARCHIVE_START_MS;
   }
 
   function shouldPollMarkets(now) {
     return !isArchiveMode(now);
   }
 
+  function lifecycleUsability(record) {
+    if (!record) return { usable: false, reason: 'unknown-market-lifecycle' };
+    if (record.closed === true || record.active === false) {
+      return { usable: false, reason: 'settled-market' };
+    }
+    if (record.closed !== false || record.active !== true) {
+      return { usable: false, reason: 'unknown-market-lifecycle' };
+    }
+    return { usable: true, reason: 'open-market' };
+  }
+
+  function finiteProbabilityMap(prices) {
+    if (!prices || typeof prices !== 'object') return false;
+    var keys = Object.keys(prices);
+    if (!keys.length) return false;
+    var total = 0;
+    for (var i = 0; i < keys.length; i++) {
+      var value = prices[keys[i]];
+      if (typeof value !== 'number' || !Number.isFinite(value) || value < 0 || value > 1) return false;
+      total += value;
+    }
+    return Number.isFinite(total) && total > 0;
+  }
+
+  function marketRecordUsability(record, pricesKey) {
+    var lifecycle = lifecycleUsability(record);
+    if (!lifecycle.usable) return lifecycle;
+    if (!finiteProbabilityMap(record[pricesKey])) {
+      return { usable: false, reason: 'invalid-market-prices' };
+    }
+    return lifecycle;
+  }
+
+  function perMatchUsability(record) {
+    var lifecycle = lifecycleUsability(record);
+    if (!lifecycle.usable) return lifecycle;
+    var p = record.devigged;
+    if (!p || !['pA', 'pD', 'pB'].every(function (key) {
+      return typeof p[key] === 'number' && Number.isFinite(p[key]) && p[key] >= 0 && p[key] <= 1;
+    })) return { usable: false, reason: 'invalid-market-prices' };
+    var sum = p.pA + p.pD + p.pB;
+    if (!Number.isFinite(sum) || Math.abs(sum - 1) > 1e-6) {
+      return { usable: false, reason: 'invalid-market-prices' };
+    }
+    return lifecycle;
+  }
+
   function snapshotUsability(snapshot) {
     var champion = snapshot && snapshot.champion;
     var prices = champion && champion.normalized;
-    if (!prices || Object.keys(prices).length === 0) {
+    if (!finiteProbabilityMap(prices)) {
       return { usable: false, reason: 'missing-champion-market' };
     }
-    if (champion.closed === true || champion.active === false) {
+    var lifecycle = lifecycleUsability(champion);
+    if (lifecycle.reason === 'settled-market') {
       return { usable: false, reason: 'settled-champion-market' };
+    }
+    if (!lifecycle.usable) {
+      return { usable: false, reason: 'unknown-champion-lifecycle' };
     }
     return { usable: true, reason: 'open-market' };
   }
@@ -58,7 +109,15 @@
     if (!shouldPollMarkets(clock())) {
       return Promise.resolve({ usable: false, reason: 'archive-cutoff', snapshot: null });
     }
-    return Promise.resolve().then(fetchSnapshot).then(function (snapshot) {
+    // Check once more and invoke synchronously. This removes the microtask gap
+    // in which the cutoff could pass after approval but before Gamma is called.
+    if (!shouldPollMarkets(clock())) {
+      return Promise.resolve({ usable: false, reason: 'archive-cutoff', snapshot: null });
+    }
+    var pending;
+    try { pending = fetchSnapshot(); }
+    catch (e) { return Promise.reject(e); }
+    return Promise.resolve(pending).then(function (snapshot) {
       if (!shouldPollMarkets(clock())) {
         return { usable: false, reason: 'archive-cutoff', snapshot: null };
       }
@@ -77,6 +136,10 @@
     MODEL_AS_OF: MODEL_AS_OF,
     isArchiveMode: isArchiveMode,
     shouldPollMarkets: shouldPollMarkets,
+    lifecycleUsability: lifecycleUsability,
+    finiteProbabilityMap: finiteProbabilityMap,
+    marketRecordUsability: marketRecordUsability,
+    perMatchUsability: perMatchUsability,
     snapshotUsability: snapshotUsability,
     shouldUseMarketSnapshot: shouldUseMarketSnapshot,
     loadUsableMarketSnapshot: loadUsableMarketSnapshot

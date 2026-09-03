@@ -6,7 +6,7 @@
 
 A static, no-build browser app for exploring a frozen pre-tournament model of the 48-team 2026 World Cup. It simulates the full tournament, then exposes matchup, venue, date and stage-reach probabilities.
 
-This is now an **engineering archive**, not a current forecast or results product. Model assumptions are frozen as of **June 2026**. Beginning at `2026-07-20T00:00:00Z`, the app does not call Polymarket's Gamma API, schedule refreshes, or calibrate against settled prices. It intentionally does not present the simulated output as actual tournament results.
+This is now an **engineering archive**, not a current forecast or results product. Model assumptions are frozen as of **June 2026**. Beginning at `2026-07-20T00:00:00Z`, the app does not call Polymarket's Gamma API, schedule refreshes, or start market calibration. A read-only calibration already running before the cutoff may finish in its worker, but its late result is ignored. The app intentionally does not present simulated output as actual tournament results.
 
 ## Run locally
 
@@ -17,7 +17,7 @@ python -m http.server 8766
 # open http://localhost:8766
 ```
 
-No build step, no dependencies to install. Preact + htm are vendored (`preact.min.umd.js`, `htm.umd.js`); reproducible hashes and licenses are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+No build step, no dependencies to install. Preact + htm are vendored (`preact.min.umd.js`, `htm.umd.js`); reproducible hashes and license links are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md), with the complete upstream texts in [`LICENSES/`](LICENSES/).
 
 ## Deploy (GitHub Pages)
 
@@ -26,14 +26,20 @@ Push this folder to a GitHub repo and enable Pages on the root. The archived exp
 ## Tests
 
 ```bash
+node --check app.js
+node --check markets.js
+node --check lifecycle.js
+node --check sim.worker.js
 node test/engine.test.mjs
 node test/selfcheck.js
 node test/test-annexc-adversarial.js
 node test/fixtures.test.mjs
 node --test test/lifecycle.test.mjs
+node --test test/markets-lifecycle.test.mjs
+node --test test/app-lifecycle.test.mjs
 ```
 
-These run on every push via GitHub Actions.
+These run on every push via GitHub Actions. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
 
 ## The four views
 
@@ -53,7 +59,7 @@ Plus a **What-if** panel: assume a group winner and recompute the downstream mod
 | **Tournament** | `simulate()` runs N = 20,000 tournaments (seeded `mulberry32`) in a Web Worker. Group round-robin with FIFA tiebreakers → top-2 auto-advance + 8 best third-placed → **FIFA Annex C** assignment of thirds to Round-of-32 slots → single-elimination to the final. Accumulates per-team stage-reach and per-slot matchup co-occurrence counters; every probability is a Monte-Carlo frequency. |
 | **Best-third** | Uses the **literal 495-row FIFA Annex C lookup table** (`data.js`, `ANNEXC_TABLE`), transcribed from the official FIFA 2026 Competition Regulations PDF. (Eligibility + bipartite matching alone does **not** uniquely reproduce FIFA's published assignment — most qualifying sets admit several legal matchings.) |
 | **Historical market blend** | Before the archive cutoff, an open champion market seeds a temperature + per-team Elo-delta fit. R16/QF/SF/Final baskets then refine the same Elo-delta vector through `calibrateReach()`. The R32/to-advance basket is comparison-only. De-vigged W/D/L prices can override the 52 mapped group fixtures. |
-| **Lifecycle** | `lifecycle.js` permits market polling only before `2026-07-20T00:00:00Z` and rejects a closed or inactive champion snapshot. After the cutoff, no Gamma request, market calibration or refresh timer is started. |
+| **Lifecycle** | `lifecycle.js` permits market polling and new calibration work only before `2026-07-20T00:00:00Z`. Market use is fail-closed: champion, reach-stage and per-match inputs must explicitly report `closed: false` and `active: true`; closed, inactive, missing or malformed states are ignored. At the cutoff, the app clears market-derived state and timers, invalidates late market-work results, and recomputes from the frozen model only. |
 
 ## Engineering case study
 
@@ -73,7 +79,8 @@ markets.js          window.WCMarkets — Polymarket Gamma API fetch + de-vig + n
 lifecycle.js        window.WCOLifecycle — cutoff and settled-market policy
 app.js              Preact UI — the four views, status bar, what-if
 THIRD_PARTY_NOTICES.md  verified vendored-bundle hashes and licenses
-test/               engine self-checks + adversarial Annex C verification
+LICENSES/           complete upstream MIT and Apache-2.0 license texts
+test/               engine/model contracts + no-network lifecycle integration
 dev/                reference copy of the sister prediction app (provenance only)
 ```
 

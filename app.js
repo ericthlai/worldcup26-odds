@@ -16,8 +16,9 @@
  *   5. status bar: model / market state and last update
  *   Any what-if group-winner change → recompute.
  *
- * After 2026-07-20, lifecycle.js blocks all Gamma polling and calibration.
- * The UI runs the frozen June 2026 model only and labels it as an archive.
+ * After 2026-07-20, lifecycle.js blocks new Gamma polling/calibration work and
+ * epoch guards discard any pre-cutoff computation that finishes late. The UI
+ * runs the frozen June 2026 model only and labels it as an archive.
  *
  * NOTE on stage marginals: before archive mode, champion odds seed a temperature
  * + per-team Elo fit. R16/QF/SF/Final baskets then refine those deltas through
@@ -34,6 +35,14 @@ var h = preact.h, render = preact.render, Component = preact.Component;
 var html = htm.bind(h);
 var WC = window.WC, ENG = window.WCEngine, MK = window.WCMarkets;
 var LIFE = window.WCOLifecycle;
+
+function marketWorkAllowed() {
+  return !!LIFE && LIFE.shouldPollMarkets(Date.now());
+}
+
+function marketLifecycleError() {
+  return new Error('market lifecycle is closed');
+}
 
 /* ---------------- i18n ---------------------------------------------------- */
 var I18N = {
@@ -366,7 +375,9 @@ function App() {
     snapshot: null,       // markets.fetchAll() output
     temp: 1,
     calib: null,          // {s, kl, deltas}
+    reachCalib: null,     // optional multi-stage reach-market refinement
     calibDeltas: null,    // per-team Elo deltas from the champion rake
+    reachMarketsApplied: null, // lifecycle envelopes used by the reach rake
     blended: false,
     updatedAt: null,
     refreshing: false,
@@ -389,40 +400,97 @@ function App() {
   };
   this._reqId = 0;
   this._pending = {};     // reqId -> {resolve}
+  this._marketEpoch = 0;  // invalidates async market work when lifecycle changes
+  this._disposed = false;
 }
 App.prototype = Object.create(Component.prototype);
 App.prototype.constructor = App;
 
 App.prototype.componentDidMount = function () {
+  var self = this;
+  this._disposed = false;
   this.bootWorker();
+  this.scheduleArchiveCutoff();
+  this._onVisibilityChange = function () {
+    if (!document.visibilityState || document.visibilityState === 'visible') {
+      self.scheduleArchiveCutoff();
+    }
+  };
+  if (document.addEventListener) document.addEventListener('visibilitychange', this._onVisibilityChange);
   this.runBaseline();
 };
 
 App.prototype.componentWillUnmount = function () {
+  this._disposed = true;
   if (this._refreshTimer) clearInterval(this._refreshTimer);
+  if (this._archiveTimer) clearTimeout(this._archiveTimer);
+  this._refreshTimer = null;
+  this._archiveTimer = null;
+  if (this._onVisibilityChange && document.removeEventListener) {
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+  }
+  this._onVisibilityChange = null;
+  this._marketEpoch += 1;
   if (this.worker) this.worker.terminate();
+};
+
+var MAX_TIMEOUT_MS = 0x7fffffff;
+
+// Keep a dedicated lifecycle timer instead of relying on the 5-minute market
+// refresh. Long waits are chunked to the browser's maximum timeout, and each
+// callback re-checks the wall clock in case the system clock changed.
+App.prototype.scheduleArchiveCutoff = function () {
+  var self = this;
+  if (this._disposed) return Promise.resolve(null);
+  if (this._archiveTimer) clearTimeout(this._archiveTimer);
+  this._archiveTimer = null;
+  if (!LIFE || !LIFE.shouldPollMarkets(Date.now())) {
+    return this.enterArchiveMode(!!this.state.results);
+  }
+  var remaining = LIFE.ARCHIVE_START_MS - Date.now();
+  this._archiveTimer = setTimeout(function () {
+    self._archiveTimer = null;
+    if (LIFE.shouldPollMarkets(Date.now())) {
+      self.scheduleArchiveCutoff();
+      return;
+    }
+    self.enterArchiveMode(true);
+  }, Math.min(remaining, MAX_TIMEOUT_MS));
+  return Promise.resolve(null);
 };
 
 // Archive mode is fail-closed: clear all market-derived state and timers. When
 // entered after a page has been open across the cutoff, recompute from the
 // frozen Elo inputs so a stale calibrated result cannot remain on screen.
 App.prototype.enterArchiveMode = function (recompute) {
+  if (this._disposed) return Promise.resolve(null);
+  var hadResults = !!this.state.results;
+  var safeResults = this.state.baseline || null;
+  this._marketEpoch += 1;
   if (this._refreshTimer) {
     clearInterval(this._refreshTimer);
     this._refreshTimer = null;
   }
+  if (this._archiveTimer) {
+    clearTimeout(this._archiveTimer);
+    this._archiveTimer = null;
+  }
   this.setState({
     archiveMode: true,
+    results: safeResults,
     snapshot: null,
     temp: 1,
     calib: null,
     reachCalib: null,
     calibDeltas: null,
+    reachMarketsApplied: null,
     blended: false,
     refreshing: false,
     tblView: 'model'
   });
-  if (recompute && this.state.results) return this.recompute(1, null, null);
+  if (recompute && hadResults) {
+    return this.recompute(1, null, null, { archiveStateCleared: true });
+  }
   return Promise.resolve(null);
 };
 
@@ -432,6 +500,7 @@ App.prototype.bootWorker = function () {
   try {
     this.worker = new Worker('./sim.worker.js');
     this.worker.onmessage = function (ev) {
+      if (self._disposed) return;
       var msg = ev.data || {};
       if (msg.type === 'ready') { self._workerReady = true; return; }
       if (msg.type === 'error') {
@@ -443,6 +512,7 @@ App.prototype.bootWorker = function () {
       if (p) { p.resolve(msg); delete self._pending[msg.id]; }
     };
     this.worker.onerror = function (e) {
+      if (self._disposed) return;
       self.setState({ workerErr: (e && e.message) || 'worker error', simming: false, recomputing: false });
     };
   } catch (e) {
@@ -474,12 +544,22 @@ App.prototype.calibrateWorker = function (championMarket, opts) {
   if (this.worker) {
     var id = ++this._reqId;
     return new Promise(function (resolve, reject) {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
       self.worker.postMessage({ id: id, type: 'calibrate', championMarket: championMarket, opts: opts });
     });
   }
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.calibrate(championMarket, opts)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
+      resolve(ENG.calibrate(championMarket, opts));
+    }, 0);
   });
 };
 
@@ -491,12 +571,22 @@ App.prototype.calibrateChampionWorker = function (championMarket, opts) {
   if (this.worker) {
     var id = ++this._reqId;
     return new Promise(function (resolve, reject) {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
       self.worker.postMessage({ id: id, type: 'calibrateChampion', championMarket: championMarket, opts: opts });
     });
   }
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.calibrateChampion(championMarket, opts)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
+      resolve(ENG.calibrateChampion(championMarket, opts));
+    }, 0);
   });
 };
 
@@ -508,12 +598,22 @@ App.prototype.calibrateReachWorker = function (reachMarkets, opts) {
   if (this.worker) {
     var id = ++this._reqId;
     return new Promise(function (resolve, reject) {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
       self.worker.postMessage({ id: id, type: 'calibrateReach', reachMarkets: reachMarkets, opts: opts });
     });
   }
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.calibrateReach(reachMarkets, opts)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
+      resolve(ENG.calibrateReach(reachMarkets, opts));
+    }, 0);
   });
 };
 
@@ -522,56 +622,137 @@ App.prototype.calibrateReachWorker = function (reachMarkets, opts) {
 App.prototype.buildReachMarkets = function (snap, champNorm) {
   if (!snap) return null;
   var rm = {};
-  if (snap.reachR16 && Object.keys(snap.reachR16).length) rm.r16 = snap.reachR16;
-  if (snap.reachQF && Object.keys(snap.reachQF).length) rm.qf = snap.reachQF;
-  if (snap.reachSF && Object.keys(snap.reachSF).length) rm.sf = snap.reachSF;
-  if (snap.reachFinal && Object.keys(snap.reachFinal).length) rm.final = snap.reachFinal;
+  var hasReachBasket = false;
+  function add(record, key) {
+    if (record && LIFE.marketRecordUsability(record, 'prices').usable) {
+      rm[key] = record.prices;
+      hasReachBasket = true;
+    }
+  }
+  add(snap.reachR16, 'r16');
+  add(snap.reachQF, 'qf');
+  add(snap.reachSF, 'sf');
+  add(snap.reachFinal, 'final');
+  if (!hasReachBasket) return null;
   if (champNorm && Object.keys(champNorm).length) rm.champion = champNorm;
-  return Object.keys(rm).length ? rm : null;
+  return rm;
+};
+
+App.prototype.reachMarketsUsable = function (snap, reachMarkets) {
+  if (!reachMarkets) return true;
+  var source = {
+    r16: snap && snap.reachR16,
+    qf: snap && snap.reachQF,
+    sf: snap && snap.reachSF,
+    final: snap && snap.reachFinal
+  };
+  return Object.keys(reachMarkets).every(function (key) {
+    if (key === 'champion') return true; // covered by snapshotUsability()
+    return LIFE.marketRecordUsability(source[key], 'prices').usable;
+  });
 };
 
 /* ---- pipeline ---- */
 App.prototype.runBaseline = function () {
   var self = this;
+  if (this._disposed) return Promise.resolve(null);
   this.setState({ simming: true });
-  this.simulate({ N: this.state.N, temperature: 1, seed: 0x9E3779B9 }).then(function (res) {
-    self.setState({ baseline: res, results: res, simming: false, phase: 'ready' });
-    if (!LIFE || !LIFE.shouldPollMarkets(Date.now())) {
-      self.enterArchiveMode(false);
-      return;
-    }
-    // During the tournament only, layer in an open market snapshot.
-    self.refreshMarkets(true);
-    self._refreshTimer = setInterval(function () { self.refreshMarkets(false); }, 5 * 60 * 1000);
+  return this.simulate({ N: this.state.N, temperature: 1, seed: 0x9E3779B9 }).then(function (res) {
+    if (self._disposed) return null;
+    self.setState({ baseline: res, results: res, simming: false, phase: 'ready' }, function () {
+      if (!LIFE || !LIFE.shouldPollMarkets(Date.now())) {
+        self.enterArchiveMode(false);
+        return;
+      }
+      // During the tournament only, layer in an open market snapshot.
+      self.refreshMarkets(true);
+      self._refreshTimer = setInterval(function () { self.refreshMarkets(false); }, 5 * 60 * 1000);
+    });
   }).catch(function (e) {
+    if (self._disposed) return null;
     self.setState({ simming: false, workerErr: String(e && e.message || e) });
+    return null;
   });
 };
 
 // fetch markets, calibrate, then re-simulate blended (with any what-if locks).
 App.prototype.refreshMarkets = function (force) {
   var self = this;
+  if (this._disposed) return Promise.resolve(null);
   if (!MK) return Promise.resolve(null);
   if (!LIFE) return this.enterArchiveMode(true);
+  var marketEpoch = ++this._marketEpoch;
   var marketApplied = false;
+
+  function cycleUsable(snap, reachMarkets) {
+    return !self._disposed && marketEpoch === self._marketEpoch &&
+      LIFE.shouldUseMarketSnapshot(snap, Date.now()) &&
+      self.reachMarketsUsable(snap, reachMarkets);
+  }
+
+  function stopExpiredCycle() {
+    if (self._disposed) return Promise.resolve(null);
+    if (!LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
+    return Promise.resolve(null); // superseded by a newer refresh
+  }
+
+  function resetToModelOnly() {
+    if (self._disposed) return Promise.resolve(null);
+    self.setState({
+      results: self.state.baseline || null,
+      snapshot: null,
+      temp: 1,
+      calib: null,
+      reachCalib: null,
+      calibDeltas: null,
+      reachMarketsApplied: null,
+      refreshing: false,
+      blended: false,
+      tblView: 'model'
+    });
+    return self.recompute(1, null, null);
+  }
+
+  function applyMarketFit(snap, fit, reachFit, temp, deltas, reachMarkets) {
+    // Final guard immediately before state mutation and market-derived sim.
+    if (!cycleUsable(snap, reachMarkets)) return stopExpiredCycle();
+    marketApplied = true;
+    self.setState({
+      snapshot: snap,
+      calib: fit,
+      reachCalib: reachFit || null,
+      temp: temp,
+      calibDeltas: deltas,
+      reachMarketsApplied: reachMarkets || null
+    });
+    return self.recompute(temp, snap, deltas, {
+      marketEpoch: marketEpoch,
+      reachMarkets: reachMarkets || null
+    });
+  }
+
   this.setState({ refreshing: true });
-  LIFE.loadUsableMarketSnapshot(function () {
+  return LIFE.loadUsableMarketSnapshot(function () {
     return MK.fetchAll({ force: !!force });
   }).then(function (marketState) {
+    if (self._disposed) return null;
     if (marketState.reason === 'archive-cutoff') return self.enterArchiveMode(true);
+    if (marketEpoch !== self._marketEpoch) return null;
     if (!marketState.usable) {
-      self.setState({ snapshot: null, refreshing: false, blended: false, tblView: 'model' });
-      return null;
+      return resetToModelOnly();
     }
     var snap = marketState.snapshot;
-    marketApplied = true;
-    self.setState({ snapshot: snap });
     var champ = snap.champion && snap.champion.normalized;
     if (champ && Object.keys(champ).length) {
       // Two-stage fit on a smaller N for speed: temperature pre-step + per-team
       // Elo rake so the sim champion vector can match (and reorder to) the
       // market. Then full re-sim with both temp AND the per-team deltas.
+      if (!cycleUsable(snap)) return stopExpiredCycle();
       return self.calibrateChampionWorker(champ, { N: 5000, iters: 4, grid: [0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 2.0] }).then(function (fit) {
+        if (self._disposed) return null;
+        // A calibration started before the cutoff may finish after it. Never
+        // launch reach calibration or apply that fit without checking again.
+        if (!cycleUsable(snap)) return stopExpiredCycle();
         var temp = (fit && fit.s) ? fit.s : 1;
         var deltas = (fit && fit.deltas) ? fit.deltas : null;
         // Second pass: rake the deltas toward the reach-stage markets (R16/QF/SF/
@@ -580,39 +761,82 @@ App.prototype.refreshMarkets = function (force) {
         // or the rake errors — never block the blended render.
         var reachMk = self.buildReachMarkets(snap, champ);
         if (reachMk) {
+          if (!cycleUsable(snap, reachMk)) return stopExpiredCycle();
           return self.calibrateReachWorker(reachMk, { N: 5000, iters: 5, s: temp, deltas: deltas }).then(function (rfit) {
+            if (self._disposed) return null;
+            if (!cycleUsable(snap, reachMk)) return stopExpiredCycle();
             var rtemp = (rfit && rfit.s) ? rfit.s : temp;
             var rdeltas = (rfit && rfit.deltas) ? rfit.deltas : deltas;
-            self.setState({ calib: fit, reachCalib: rfit, temp: rtemp, calibDeltas: rdeltas });
-            return self.recompute(rtemp, snap, rdeltas);
+            return applyMarketFit(snap, fit, rfit, rtemp, rdeltas, reachMk);
           }, function () {
-            self.setState({ calib: fit, temp: temp, calibDeltas: deltas });
-            return self.recompute(temp, snap, deltas);
+            if (self._disposed) return null;
+            if (!cycleUsable(snap)) return stopExpiredCycle();
+            return applyMarketFit(snap, fit, null, temp, deltas, null);
           });
         }
-        self.setState({ calib: fit, temp: temp, calibDeltas: deltas });
-        return self.recompute(temp, snap, deltas);
+        return applyMarketFit(snap, fit, null, temp, deltas, null);
       });
     }
-    return self.recompute(self.state.temp, snap);
+    return resetToModelOnly();
   }).then(function () {
+    if (self._disposed) return null;
     if (marketApplied && !LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
-    if (marketApplied && LIFE.shouldPollMarkets(Date.now())) {
+    if (marketApplied && marketEpoch === self._marketEpoch && LIFE.shouldPollMarkets(Date.now())) {
       self.setState({ refreshing: false, updatedAt: new Date(), blended: true });
     }
   }).catch(function (e) {
-    self.setState({ refreshing: false });
+    if (self._disposed) return null;
+    if (!LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
+    if (marketEpoch === self._marketEpoch) self.setState({ refreshing: false });
+    return null;
   });
 };
 
 // build group overrides + locked results from snapshot & what-if, re-simulate.
-App.prototype.recompute = function (temp, snap, deltas) {
+App.prototype.recompute = function (temp, snap, deltas, opts) {
   var self = this;
-  if (snap === undefined) snap = this.state.snapshot;
-  if (temp === undefined) temp = this.state.temp;
-  // per-team Elo deltas from the champion rake (reorder to market). Fall back to
-  // the last calibrated deltas so what-if recomputes keep the market fit.
-  if (deltas === undefined) deltas = this.state.calibDeltas || null;
+  if (this._disposed) return Promise.resolve(null);
+  opts = opts || {};
+  var archiveNow = !LIFE || !LIFE.shouldPollMarkets(Date.now());
+  if (archiveNow) {
+    if (!opts.archiveStateCleared) this.enterArchiveMode(false);
+    snap = null;
+    temp = 1;
+    deltas = null;
+  } else {
+    if (opts.marketEpoch != null && opts.marketEpoch !== this._marketEpoch) {
+      return Promise.resolve(null);
+    }
+    if (snap === undefined) snap = this.state.snapshot;
+    if (temp === undefined) temp = this.state.temp;
+    if (opts.reachMarkets === undefined) {
+      opts.reachMarkets = this.state.reachMarketsApplied || null;
+    }
+    // per-team Elo deltas from the market rake. A market-derived temperature or
+    // delta vector is never valid without the same explicitly-open snapshot.
+    if (deltas === undefined) deltas = this.state.calibDeltas || null;
+    if (!snap || !LIFE.shouldUseMarketSnapshot(snap, Date.now()) ||
+        !this.reachMarketsUsable(snap, opts.reachMarkets)) {
+      snap = null;
+      temp = 1;
+      deltas = null;
+      if (this.state.snapshot || this.state.calib || this.state.calibDeltas || this.state.blended) {
+        this.setState({
+          results: this.state.baseline || null,
+          snapshot: null,
+          temp: 1,
+          calib: null,
+          reachCalib: null,
+          calibDeltas: null,
+          reachMarketsApplied: null,
+          blended: false,
+          tblView: 'model'
+        });
+      }
+    }
+  }
+  var marketDerived = !!snap || !!deltas || temp !== 1;
+  var marketEpoch = opts.marketEpoch != null ? opts.marketEpoch : this._marketEpoch;
   this.setState({ recomputing: true });
 
   var groupOverrides = {};
@@ -620,7 +844,17 @@ App.prototype.recompute = function (temp, snap, deltas) {
     Object.keys(snap.perMatch).forEach(function (no) {
       var pm = snap.perMatch[no];
       var dv = pm && pm.devigged;
-      if (dv && dv.pA != null) groupOverrides[no] = { pA: dv.pA, pD: dv.pD, pB: dv.pB };
+      if (LIFE.perMatchUsability(pm).usable) {
+        groupOverrides[no] = { pA: dv.pA, pD: dv.pD, pB: dv.pB };
+      }
+    });
+  }
+
+  function appliedMarketInputsUsable() {
+    if (!snap || !LIFE.shouldUseMarketSnapshot(snap, Date.now()) ||
+        !self.reachMarketsUsable(snap, opts.reachMarkets)) return false;
+    return Object.keys(groupOverrides).every(function (no) {
+      return LIFE.perMatchUsability(snap.perMatch[no]).usable;
     });
   }
 
@@ -645,6 +879,37 @@ App.prototype.recompute = function (temp, snap, deltas) {
     seed: 0x9E3779B9
   };
   return this.simulate(cfg).then(function (res) {
+    if (self._disposed) return null;
+    // Never commit a market-derived simulation that completed after cutoff or
+    // after a newer market cycle invalidated it. Re-run from frozen model state.
+    if (marketDerived && marketEpoch !== self._marketEpoch) return null;
+    if (marketDerived && !appliedMarketInputsUsable()) {
+      if (!LIFE.shouldPollMarkets(Date.now())) {
+        return self.enterArchiveMode(false).then(function () {
+          return self.recompute(1, null, null, { archiveStateCleared: true });
+        });
+      }
+      self.setState({
+        results: self.state.baseline || null,
+        snapshot: null,
+        temp: 1,
+        calib: null,
+        reachCalib: null,
+        calibDeltas: null,
+        reachMarketsApplied: null,
+        blended: false,
+        tblView: 'model'
+      });
+      return self.recompute(1, null, null);
+    }
+    if (marketDerived && (!LIFE || !LIFE.shouldPollMarkets(Date.now()))) {
+      return self.enterArchiveMode(false).then(function () {
+        return self.recompute(1, null, null, { archiveStateCleared: true });
+      });
+    }
+    if (!marketDerived && (!LIFE || !LIFE.shouldPollMarkets(Date.now()))) {
+      self.enterArchiveMode(false);
+    }
     self.setState({ results: res, recomputing: false });
     return res;
   });
@@ -1338,12 +1603,16 @@ App.prototype.renderTable = function (T, lang) {
   if (!res) return html`<section style="max-width:980px;margin:0 auto;padding:16px 14px"><div class="shim" style="height:200px;border-radius:12px"></div></section>`;
 
   // market marginals per stage (where available), basket-normalized already.
+  function reachPrices(record) {
+    return record && LIFE && LIFE.marketRecordUsability(record, 'prices').usable
+      ? record.prices : null;
+  }
   var mkt = {
     r32: snap && snap.advance ? snap.advance : null,
-    r16: snap && snap.reachR16 ? snap.reachR16 : null,
-    qf: snap && snap.reachQF ? snap.reachQF : null,
-    sf: snap && snap.reachSF ? snap.reachSF : null,
-    final: snap && snap.reachFinal ? snap.reachFinal : null,
+    r16: snap ? reachPrices(snap.reachR16) : null,
+    qf: snap ? reachPrices(snap.reachQF) : null,
+    sf: snap ? reachPrices(snap.reachSF) : null,
+    final: snap ? reachPrices(snap.reachFinal) : null,
     champion: snap && snap.champion ? snap.champion.normalized : null
   };
 
@@ -1516,6 +1785,10 @@ App.prototype.renderWhatif = function (T, lang) {
 };
 
 /* ---------------- mount -------------------------------------------------- */
+// A deliberately tiny test seam: production leaves __WCO_TEST__ undefined,
+// while deterministic integration tests can exercise the real App lifecycle.
+if (window.__WCO_TEST__) window.__WCO_TEST__.App = App;
+
 if (!WC || !ENG) {
   document.getElementById('app').innerHTML =
     '<div style="padding:40px;font-family:sans-serif;color:#A23227">data.js / engine.js failed to load.</div>';

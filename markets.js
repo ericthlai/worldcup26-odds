@@ -232,18 +232,27 @@
      PER-FAMILY FETCHERS  (each isolates its own failure)
      =============================================================== */
 
+  function eventLifecycle(ev) {
+    return {
+      closed: ev && typeof ev.closed === 'boolean' ? ev.closed : null,
+      active: ev && typeof ev.active === 'boolean' ? ev.active : null,
+      endDate: ev && typeof ev.endDate === 'string' ? ev.endDate : null
+    };
+  }
+
   // champion: world-cup-winner (negRisk, ~coherent). Normalize Yes-sum to 1.
   function fetchChampion() {
     return fetchEventsBySlug(['world-cup-winner']).then(function (bySlug) {
       var ev = bySlug['world-cup-winner'];
       var raw = eventToCodeMap(ev);
       var normalized = normalizeBasket(raw, 1);
+      var lifecycle = eventLifecycle(ev);
       return {
         code: raw,
         normalized: normalized,
-        closed: ev ? !!ev.closed : null,
-        active: ev ? ev.active !== false : null,
-        endDate: ev && ev.endDate ? ev.endDate : null
+        closed: lifecycle.closed,
+        active: lifecycle.active,
+        endDate: lifecycle.endDate
       };
     });
   }
@@ -277,7 +286,13 @@
     return fetchEventsBySlug([slug]).then(function (bySlug) {
       var ev = bySlug[slug];
       var raw = eventToCodeMap(ev);
-      return normalizeBasket(raw, targetSum);
+      var lifecycle = eventLifecycle(ev);
+      return {
+        prices: normalizeBasket(raw, targetSum),
+        closed: lifecycle.closed,
+        active: lifecycle.active,
+        endDate: lifecycle.endDate
+      };
     });
   }
 
@@ -312,7 +327,9 @@
         out[no] = {
           pA: pA, pD: pD, pB: pB,
           devigged: dv,                                  // {pA,pD,pB,overround} or null
-          closed: !!ev.closed, live: !!ev.live
+          closed: typeof ev.closed === 'boolean' ? ev.closed : null,
+          active: typeof ev.active === 'boolean' ? ev.active : null,
+          live: typeof ev.live === 'boolean' ? ev.live : null
         };
       });
       return out;
@@ -366,11 +383,11 @@
    *   champion:   { code:{code->p}, normalized:{code->p sum 1}, closed, active, endDate },
    *   advance:    { code->p }                  // R32 qualify marginal (~well-calibrated)
    *   groupWinner:{ 'A'..'L' -> {code->p sum 1} },
-   *   reachR16:   { code->p basket-normalized to 16 },
-   *   reachQF:    { code->p -> 8 },
-   *   reachSF:    { code->p -> 4 },
-   *   reachFinal: { code->p -> 2 },
-   *   perMatch:   { matchNo -> {pA,pD,pB, devigged:{pA,pD,pB,overround}, closed, live} },
+   *   reachR16:   { prices:{code->p sum 16}, closed, active, endDate },
+   *   reachQF:    { prices:{code->p sum 8}, closed, active, endDate },
+   *   reachSF:    { prices:{code->p sum 4}, closed, active, endDate },
+   *   reachFinal: { prices:{code->p sum 2}, closed, active, endDate },
+   *   perMatch:   { matchNo -> {pA,pD,pB, devigged, closed, active, live} },
    *   stageElim:  { code -> {stageKey->p} },   // marquee cross-check
    *   fetchedAt:  Date,
    *   errors:     [ {market, error} ]
@@ -392,10 +409,10 @@
       }, errors),
       advance:    guard('world-cup-team-to-advance-to-knockout-stages', fetchAdvance(), {}, errors),
       groupWinner:guard('world-cup-group-{a..l}-winner', fetchGroupWinner(), {}, errors),
-      reachR16:   guard('world-cup-nation-to-reach-round-of-16',  fetchReach('world-cup-nation-to-reach-round-of-16', 16),  {}, errors),
-      reachQF:    guard('world-cup-nation-to-reach-quarterfinals', fetchReach('world-cup-nation-to-reach-quarterfinals', 8), {}, errors),
-      reachSF:    guard('world-cup-nation-to-reach-semifinals',    fetchReach('world-cup-nation-to-reach-semifinals', 4),    {}, errors),
-      reachFinal: guard('world-cup-nation-to-reach-final',         fetchReach('world-cup-nation-to-reach-final', 2),         {}, errors),
+      reachR16:   guard('world-cup-nation-to-reach-round-of-16',  fetchReach('world-cup-nation-to-reach-round-of-16', 16),  { prices: {}, closed: null, active: null, endDate: null }, errors),
+      reachQF:    guard('world-cup-nation-to-reach-quarterfinals', fetchReach('world-cup-nation-to-reach-quarterfinals', 8), { prices: {}, closed: null, active: null, endDate: null }, errors),
+      reachSF:    guard('world-cup-nation-to-reach-semifinals',    fetchReach('world-cup-nation-to-reach-semifinals', 4),    { prices: {}, closed: null, active: null, endDate: null }, errors),
+      reachFinal: guard('world-cup-nation-to-reach-final',         fetchReach('world-cup-nation-to-reach-final', 2),         { prices: {}, closed: null, active: null, endDate: null }, errors),
       perMatch:   guard('fifwc-* (52 group matches)', fetchPerMatch(), {}, errors),
       stageElim:  guard('world-cup-{nation}-stage-of-elimination', fetchStageElim(), {}, errors)
     };
