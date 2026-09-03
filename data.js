@@ -56,11 +56,13 @@
     arrowhead:['Arrowhead Stadium','堪萨斯城','C','US',''],
     azteca:['Estadio Azteca','墨西哥城','C','MX',''],
     bbva:['Estadio BBVA','蒙特雷','C','MX',''],
+    akron:['Estadio Akron','瓜达拉哈拉 · Zapopan','C','MX',''],
     bmo:['BMO Field','多伦多','E','CA',''],
     bcplace:['BC Place','温哥华','W','CA','']
   };
 
-  // ---- 52 US-hosted group matches: [no,date,group,t1,t2,venue] (verbatim) --
+  // ---- 72 group matches: [no,date,group,t1,t2,venue] (verbatim for the 52
+  // US-hosted rows; the 20 Mexico/Canada/host-gap rows appended below) -------
   var GM = [
     [4,'2026-06-12','D','usa','par','sofi'],[5,'2026-06-13','B','qat','sui','levis'],
     [6,'2026-06-13','C','bra','mar','metlife'],[7,'2026-06-13','C','hai','sco','gillette'],
@@ -87,7 +89,24 @@
     [65,'2026-06-26','I','fra','nor','gillette'],[66,'2026-06-26','I','sen','irq','hardrock'],
     [67,'2026-06-27','L','pan','eng','metlife'],[68,'2026-06-27','L','cro','gha','linc'],
     [69,'2026-06-27','J','jor','arg','att'],[70,'2026-06-27','J','alg','aut','arrowhead'],
-    [71,'2026-06-27','K','col','por','hardrock'],[72,'2026-06-27','K','cod','uzb','mbs']
+    [71,'2026-06-27','K','col','por','hardrock'],[72,'2026-06-27','K','cod','uzb','mbs'],
+
+    // Mexico- and Canada-hosted group matches (added 2026-09; sources: FIFA.com
+    // official scores/fixtures page + Wikipedia per-group fixture tables, since
+    // the ESPN scoreboard API returned HTTP 403 from this sandbox). Two of the
+    // twenty (no.62 cpv/ksa at Houston, no.64 egy/irn at Seattle) turned out to
+    // be additional US-hosted gaps rather than MX/CA ones; included here too
+    // since they were equally missing and both sources agreed on them.
+    [1,'2026-06-11','A','mex','rsa','azteca'],[2,'2026-06-11','A','kor','cze','akron'],
+    [3,'2026-06-12','B','can','bih','bmo'],[8,'2026-06-13','D','aus','tur','bcplace'],
+    [12,'2026-06-14','F','swe','tun','bbva'],[23,'2026-06-17','L','gha','pan','bmo'],
+    [24,'2026-06-17','K','uzb','col','azteca'],[27,'2026-06-18','B','can','qat','bcplace'],
+    [28,'2026-06-18','A','mex','kor','akron'],[34,'2026-06-20','E','ger','civ','bmo'],
+    [36,'2026-06-20','F','tun','jpn','bbva'],[40,'2026-06-21','G','nzl','egy','bcplace'],
+    [46,'2026-06-23','L','pan','cro','bmo'],[48,'2026-06-23','K','col','cod','akron'],
+    [51,'2026-06-24','B','sui','can','bcplace'],[53,'2026-06-24','A','cze','mex','azteca'],
+    [54,'2026-06-24','A','rsa','kor','bbva'],[62,'2026-06-26','H','cpv','ksa','nrg'],
+    [63,'2026-06-26','H','uru','esp','akron'],[64,'2026-06-26','G','egy','irn','lumen']
   ];
 
   // ---- 32 knockout matches with slot-resolution rules (verbatim) ----------

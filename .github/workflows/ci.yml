@@ -21,3 +21,4 @@ jobs:
           node test/engine.test.mjs
           node test/selfcheck.js
           node test/test-annexc-adversarial.js
+          node test/fixtures.test.mjs
