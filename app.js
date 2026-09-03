@@ -1,32 +1,32 @@
 /* ============================================================================
  * app.js — WorldcupOdds front-end (Preact + htm, no build step).
  *
- * PURPOSE: see WHICH teams might play WHERE and WHEN, with probabilities, so
- * the user can decide which tickets to buy — and watch it move live as
- * results / markets shift.
+ * PURPOSE: preserve an explorable World Cup 2026 probability model and make
+ * its assumptions, lifecycle and historical market calibration explicit.
  *
  * Pipeline on load:
  *   1. sim baseline (ELO, temperature 1) via the Web Worker  → instant skeleton
- *   2. markets.fetchAll()  → live Polymarket marginals
+ *   2. Before 2026-07-20 only: markets.fetchAll() → open Polymarket marginals
  *   3. calibrate to the champion market in TWO stages: a global temperature
  *      pre-step, then a per-team Elo rake so the sim champion vector can match
  *      (and reorder to) the market — a single scalar temperature alone cannot
  *      reorder teams away from the Elo ranking.
  *   4. re-simulate with calibrated temperature + per-team Elo deltas + group
  *      W/D/L overrides (de-vigged per-match market) + what-if locked results.
- *   5. status bar: model ⊕ market blend, last update, auto-refresh every 5 min
- *   Any what-if change (lock group winner / match result) → recompute.
+ *   5. status bar: model / market state and last update
+ *   Any what-if group-winner change → recompute.
  *
- * NOTE on stage marginals: the champion market drives calibration (temp + rake).
- * The reach-stage markets (reachR16/QF/SF/Final) and the to-advance/R32 basket
- * are fetched and shown SIDE-BY-SIDE with the model in the stage table for
- * comparison, but are NOT raked into the sim. (A per-stage IPF pass toward the
- * well-calibrated R32/to-advance basket, with per-team stage monotonicity, is a
- * possible future enhancement — the champion rake already pulls each team's
- * earlier-stage reach in the right direction via the funnel.)
+ * After 2026-07-20, lifecycle.js blocks new Gamma polling/calibration work and
+ * epoch guards discard any pre-cutoff computation that finishes late. The UI
+ * runs the frozen June 2026 model only and labels it as an archive.
+ *
+ * NOTE on stage marginals: before archive mode, champion odds seed a temperature
+ * + per-team Elo fit. R16/QF/SF/Final baskets then refine those deltas through
+ * calibrateReach(); the R32/to-advance basket is comparison-only in the table.
  *
  * Reads window.WC (data.js), window.WCEngine (engine.js, also runs in worker),
- * window.WCMarkets (markets.js). Worker = sim.worker.js.
+ * window.WCMarkets (markets.js), window.WCOLifecycle (lifecycle.js).
+ * Worker = sim.worker.js.
  * ==========================================================================*/
 (function () {
 'use strict';
@@ -34,12 +34,21 @@
 var h = preact.h, render = preact.render, Component = preact.Component;
 var html = htm.bind(h);
 var WC = window.WC, ENG = window.WCEngine, MK = window.WCMarkets;
+var LIFE = window.WCOLifecycle;
+
+function marketWorkAllowed() {
+  return !!LIFE && LIFE.shouldPollMarkets(Date.now());
+}
+
+function marketLifecycleError() {
+  return new Error('market lifecycle is closed');
+}
 
 /* ---------------- i18n ---------------------------------------------------- */
 var I18N = {
   zh: {
-    tagline: '哪些球队 · 在哪 · 什么时候碰面 — 实时概率帮你挑票',
-    sub: '模型 ⊕ Polymarket · 自动更新',
+    tagline: '哪些球队 · 在哪 · 什么时候碰面 — 探索赛前模型推演',
+    sub: '交互式蒙特卡洛模型 · 赛后归档',
     window: 'JUN 11 — JUL 19',
     tabs: { radar: '明星对阵', venue: '场馆/日期', path: '球队路径', table: '阶段概率' },
     tabsSub: { radar: '谁会碰面', venue: '哪场好看', path: '能走多远', table: '全队对比' },
@@ -47,6 +56,8 @@ var I18N = {
     statusModel: '纯模型 (ELO)',
     statusBlend: '模型 ⊕ Polymarket',
     statusCalib: '已校准 · 温度',
+    statusArchive: '赛后归档 · 纯模型',
+    modelAsOf: '模型假设冻结于 2026 年 6 月',
     updated: '更新于',
     refreshing: '刷新行情中…',
     refresh: '刷新',
@@ -54,7 +65,7 @@ var I18N = {
     runs: '次模拟',
     // radar
     radarTitle: '明星对阵雷达',
-    radarIntro: '选两支球队(或两位球星),看他们在淘汰赛碰面的概率 — 以及每一种可能的碰面:轮次、场馆、城市、日期与概率。最可能的一场,就是最值得买的票。',
+    radarIntro: '选两支球队(或两位球星),查看赛前模型推演的淘汰赛碰面概率,包括轮次、场馆、城市和日期。',
     pickMode: '选择方式',
     byTeam: '按球队',
     byStar: '按球星',
@@ -66,13 +77,13 @@ var I18N = {
     sameGroupNote: '两队同在一组,小组赛必碰;此处只算淘汰赛再相遇。',
     noMeet: '在当前模型下,这两队几乎不会在淘汰赛相遇(< 0.1%)。',
     everyMeeting: '所有可能的碰面',
-    bestTicket: '🎟️ 最值得买的票',
+    bestTicket: '最高概率对阵',
     round: '轮次', venueCol: '场馆 / 城市', dateCol: '日期', probCol: '概率',
     pickTwo: '请在上方选择两支球队 / 两位球星。',
     samePick: '请选择两支不同的球队。',
     // venue
     venueTitle: '场馆 / 日期浏览器',
-    venueIntro: '挑一场淘汰赛(按场馆 + 日期),看最可能在那里上演的对阵、明星指数,以及每支热门球队现身的概率。买票前先看看哪场最有看头。',
+    venueIntro: '挑一场淘汰赛(按场馆 + 日期),查看赛前模型中最可能的对阵、明星指数及热门球队现身概率。',
     pickMatch: '选择淘汰赛',
     starPower: '明星指数',
     starPowerNote: '= 预计现身的明星分之和(STARS 加权)',
@@ -93,14 +104,14 @@ var I18N = {
     champion: '夺冠',
     // table
     tableTitle: '全队阶段概率表',
-    tableIntro: '48 支球队 × 各阶段概率。点表头排序。可切换「模型」与「Polymarket 行情」并排对照。',
+    tableIntro: '48 支球队 × 各阶段赛前模型概率。点表头排序。归档模式不读取已结算行情。',
     showModel: '模型',
     showMarket: 'Polymarket',
     showBoth: '并排',
     teamCol: '球队',
     // whatif
     whatifTitle: '情景假设 (What-if)',
-    whatifIntro: '锁定一个小组头名,或锁定一场已结束比赛的胜方,然后看概率怎么变。',
+    whatifIntro: '假设一支球队获得小组头名,比较其对后续概率的影响。',
     lockGroupWinner: '锁定小组头名',
     lockMatch: '锁定比赛结果',
     noGroup: '— 不锁定 —',
@@ -110,10 +121,11 @@ var I18N = {
     activeWhatif: '当前假设',
     // stages
     st: { r32: '32 强', r16: '16 强', qf: '8 强', sf: '4 强', final: '决赛', champion: '夺冠' },
-    footer: '模型校准至 Polymarket,仅供娱乐;以 FIFA 官方为准 · 行情来自 Polymarket · 概率为模型推演',
+    footer: '赛前概率模型归档 · 模型假设冻结于 2026 年 6 月 · 不代表实际赛果或当前行情',
+    footerActive: '赛事期间模型可使用开放的 Polymarket 市场进行校准 · 概率仅为模型推演',
     lang: 'EN',
     // goal hint banner
-    goalHint: '想知道买哪张票?选两支球队 → 看「最值得买的票」→ 一键跳到场馆浏览器。',
+    goalHint: '选两支球队 → 查看最高概率对阵 → 在场馆浏览器继续探索。',
     goalHintRadar: '明星对阵',
     goalHintVenue: '场馆浏览器',
     dismiss: '知道了',
@@ -141,17 +153,17 @@ var I18N = {
     regionW: '西区', regionE: '东区', regionC: '中区',
     sortByStar: '按明星指数',
     // info popovers
-    meetInfo: '这是模型推演两队在淘汰赛(16/8/4 强、决赛)相遇的概率,综合 20000 次模拟并校准到 Polymarket 行情。同组球队的小组赛相遇不计入。',
-    tempInfo: '温度 = 模型对行情的信任程度。温度越低,越贴近 Polymarket;越高,越接近原始 ELO 模型。',
+    meetInfo: '这是冻结的赛前模型基于 20000 次模拟得出的淘汰赛相遇概率,不代表实际赛果。同组球队的小组赛相遇不计入。',
+    tempInfo: '温度是赛事期间用于市场校准的参数;赛后归档模式不读取或校准已结算市场。',
     // loading / empty
     simmingShort: '模拟计算中…',
     tooEarly: '这场比赛的对阵还太早,无法预测具体球队 — 试试更靠后的轮次。',
     // what-if
-    whatifSubGeneric: '锁定一个结果,看概率实时变化 — 例如锁阿根廷小组头名'
+    whatifSubGeneric: '设置一个小组头名假设,比较模型情景 — 例如阿根廷小组头名'
   },
   en: {
-    tagline: 'Which teams · where · when they meet — live odds to pick your tickets',
-    sub: 'Model ⊕ Polymarket · auto-updating',
+    tagline: 'Explore who could meet, where and when — through a pre-tournament model',
+    sub: 'Interactive Monte Carlo model · post-tournament archive',
     window: 'JUN 11 — JUL 19',
     tabs: { radar: 'Star Radar', venue: 'Venue/Date', path: 'Team Path', table: 'Stage Odds' },
     tabsSub: { radar: 'who meets', venue: 'best match', path: 'how far', table: 'compare all' },
@@ -159,13 +171,15 @@ var I18N = {
     statusModel: 'Model only (ELO)',
     statusBlend: 'Model ⊕ Polymarket',
     statusCalib: 'Calibrated · temp',
+    statusArchive: 'Post-tournament archive · model only',
+    modelAsOf: 'Model assumptions frozen in June 2026',
     updated: 'Updated',
     refreshing: 'Refreshing odds…',
     refresh: 'Refresh',
     live: 'live',
     runs: 'runs',
     radarTitle: 'Star Matchup Radar',
-    radarIntro: 'Pick two teams (or two stars) and see the probability they meet in the knockouts — plus every possible meeting: round, venue, city, date and the odds. The single most likely one is the ticket worth buying.',
+    radarIntro: 'Pick two teams (or stars) to explore the pre-tournament model’s knockout meeting probabilities by round, venue, city and date.',
     pickMode: 'Pick by',
     byTeam: 'Team',
     byStar: 'Star',
@@ -177,12 +191,12 @@ var I18N = {
     sameGroupNote: 'These two share a group, so they meet in the group stage; this only counts a knockout rematch.',
     noMeet: 'Under the current model these two almost never meet in the knockouts (< 0.1%).',
     everyMeeting: 'Every possible meeting',
-    bestTicket: '🎟️ Best ticket to buy',
+    bestTicket: 'Highest-probability meeting',
     round: 'Round', venueCol: 'Venue / City', dateCol: 'Date', probCol: 'Prob',
     pickTwo: 'Pick two teams / stars above.',
     samePick: 'Pick two different teams.',
     venueTitle: 'Venue / Date Browser',
-    venueIntro: 'Pick a knockout match (by venue + date) to see the most likely matchups there, a star-power score, and how likely each marquee team is to appear. Scout the best ticket before you buy.',
+    venueIntro: 'Pick a knockout match by venue and date to explore its most likely modelled matchups, star-power score and marquee-team appearance probabilities.',
     pickMatch: 'Pick a knockout',
     starPower: 'Star power',
     starPowerNote: '= sum of STARS expected to appear',
@@ -201,13 +215,13 @@ var I18N = {
     noPath: 'Pick a team above.',
     champion: 'Champion',
     tableTitle: 'Stage Probability Table',
-    tableIntro: '48 teams × stage probabilities. Click a header to sort. Toggle model vs Polymarket marginals side by side.',
+    tableIntro: '48 teams × pre-tournament stage probabilities. Click a header to sort. Archive mode never reads settled market prices.',
     showModel: 'Model',
     showMarket: 'Polymarket',
     showBoth: 'Both',
     teamCol: 'Team',
     whatifTitle: 'What-if',
-    whatifIntro: 'Lock a group winner, or lock the winner of a finished match, then watch the probabilities move.',
+    whatifIntro: 'Assume a group winner and compare how that scenario changes downstream probabilities.',
     lockGroupWinner: 'Lock a group winner',
     lockMatch: 'Lock a match result',
     noGroup: '— none —',
@@ -216,9 +230,10 @@ var I18N = {
     recomputing: 'Recomputing…',
     activeWhatif: 'Active assumptions',
     st: { r32: 'R32', r16: 'R16', qf: 'QF', sf: 'SF', final: 'Final', champion: 'Champion' },
-    footer: 'Model calibrated to Polymarket · for fun only; FIFA is authoritative · odds from Polymarket · probabilities are model output',
+    footer: 'Pre-tournament probability model archive · assumptions frozen in June 2026 · not actual results or current market prices',
+    footerActive: 'During the tournament, the model may calibrate against open Polymarket markets · probabilities are model output',
     lang: '中文',
-    goalHint: 'Want to know which ticket to buy? Pick two teams → see the Best ticket → jump to the Venue browser.',
+    goalHint: 'Pick two teams → inspect the highest-probability meeting → continue in the Venue browser.',
     goalHintRadar: 'Star Radar',
     goalHintVenue: 'Venue browser',
     dismiss: 'Got it',
@@ -241,11 +256,11 @@ var I18N = {
     matchesHere: 'matches',
     regionW: 'West', regionE: 'East', regionC: 'Central',
     sortByStar: 'By star power',
-    meetInfo: 'The model’s probability the two meet in a knockout (R16/QF/SF/Final), from 20,000 simulations calibrated to Polymarket. A group-stage meeting between same-group teams is not counted.',
-    tempInfo: 'Temperature = how much the model trusts the market vs the raw ELO. Lower hugs Polymarket; higher leans on raw ELO.',
+    meetInfo: 'A frozen pre-tournament estimate from 20,000 simulations; it is not an actual result. Same-group meetings are excluded.',
+    tempInfo: 'Temperature was a tournament-time calibration parameter. Archive mode neither reads nor calibrates against settled markets.',
     simmingShort: 'Simulating…',
     tooEarly: 'Too early to predict specific teams for this match — try a later round.',
-    whatifSubGeneric: 'Lock a result and watch the odds move live — e.g. lock Argentina to win its group'
+    whatifSubGeneric: 'Set a group-winner assumption and compare the scenario — for example, Argentina wins its group'
   }
 };
 
@@ -340,8 +355,9 @@ var KO_MATCHES = WC.KO.slice();
 /* ---------------- App component ------------------------------------------ */
 function App() {
   Component.call(this);
-  var lang = 'zh';
+  var lang = 'en';
   var goalHintDismissed = false;
+  var archiveMode = !LIFE || LIFE.isArchiveMode(Date.now());
   try {
     var l = localStorage.getItem('wco-lang'); if (l === 'en' || l === 'zh') lang = l;
     if (localStorage.getItem('wco-goalhint') === '1') goalHintDismissed = true;
@@ -353,12 +369,15 @@ function App() {
     baseline: null,       // pure-ELO baseline results (for what-if deltas)
     N: 20000,
     phase: 'init',        // 'init' | 'ready'
+    archiveMode: archiveMode,
     simming: true,
     recomputing: false,
     snapshot: null,       // markets.fetchAll() output
     temp: 1,
     calib: null,          // {s, kl, deltas}
+    reachCalib: null,     // optional multi-stage reach-market refinement
     calibDeltas: null,    // per-team Elo deltas from the champion rake
+    reachMarketsApplied: null, // lifecycle envelopes used by the reach rake
     blended: false,
     updatedAt: null,
     refreshing: false,
@@ -370,7 +389,7 @@ function App() {
     vRound: '',           // venue filter: '' | 'r32' | 'r16' | 'qf' | 'sf' | 'final'
     vSort: 'date',        // venue list sort: 'date' | 'star'
     pTeam: 'usa',
-    tblSort: 'champion', tblDir: -1, tblView: 'both',
+    tblSort: 'champion', tblDir: -1, tblView: 'model',
     // findability / UX
     goalHintDismissed: goalHintDismissed,
     sheet: null,          // searchable picker bottom-sheet: {kind, field, query} | null
@@ -381,18 +400,98 @@ function App() {
   };
   this._reqId = 0;
   this._pending = {};     // reqId -> {resolve}
+  this._marketEpoch = 0;  // invalidates async market work when lifecycle changes
+  this._disposed = false;
 }
 App.prototype = Object.create(Component.prototype);
 App.prototype.constructor = App;
 
 App.prototype.componentDidMount = function () {
+  var self = this;
+  this._disposed = false;
   this.bootWorker();
+  this.scheduleArchiveCutoff();
+  this._onVisibilityChange = function () {
+    if (!document.visibilityState || document.visibilityState === 'visible') {
+      self.scheduleArchiveCutoff();
+    }
+  };
+  if (document.addEventListener) document.addEventListener('visibilitychange', this._onVisibilityChange);
   this.runBaseline();
 };
 
 App.prototype.componentWillUnmount = function () {
+  this._disposed = true;
   if (this._refreshTimer) clearInterval(this._refreshTimer);
+  if (this._archiveTimer) clearTimeout(this._archiveTimer);
+  this._refreshTimer = null;
+  this._archiveTimer = null;
+  if (this._onVisibilityChange && document.removeEventListener) {
+    document.removeEventListener('visibilitychange', this._onVisibilityChange);
+  }
+  this._onVisibilityChange = null;
+  this._marketEpoch += 1;
   if (this.worker) this.worker.terminate();
+};
+
+var MAX_TIMEOUT_MS = 0x7fffffff;
+
+// Keep a dedicated lifecycle timer instead of relying on the 5-minute market
+// refresh. Long waits are chunked to the browser's maximum timeout, and each
+// callback re-checks the wall clock in case the system clock changed.
+App.prototype.scheduleArchiveCutoff = function () {
+  var self = this;
+  if (this._disposed) return Promise.resolve(null);
+  if (this._archiveTimer) clearTimeout(this._archiveTimer);
+  this._archiveTimer = null;
+  if (!LIFE || !LIFE.shouldPollMarkets(Date.now())) {
+    return this.enterArchiveMode(!!this.state.results);
+  }
+  var remaining = LIFE.ARCHIVE_START_MS - Date.now();
+  this._archiveTimer = setTimeout(function () {
+    self._archiveTimer = null;
+    if (LIFE.shouldPollMarkets(Date.now())) {
+      self.scheduleArchiveCutoff();
+      return;
+    }
+    self.enterArchiveMode(true);
+  }, Math.min(remaining, MAX_TIMEOUT_MS));
+  return Promise.resolve(null);
+};
+
+// Archive mode is fail-closed: clear all market-derived state and timers. When
+// entered after a page has been open across the cutoff, recompute from the
+// frozen Elo inputs so a stale calibrated result cannot remain on screen.
+App.prototype.enterArchiveMode = function (recompute) {
+  if (this._disposed) return Promise.resolve(null);
+  var hadResults = !!this.state.results;
+  var safeResults = this.state.baseline || null;
+  this._marketEpoch += 1;
+  if (this._refreshTimer) {
+    clearInterval(this._refreshTimer);
+    this._refreshTimer = null;
+  }
+  if (this._archiveTimer) {
+    clearTimeout(this._archiveTimer);
+    this._archiveTimer = null;
+  }
+  this.setState({
+    archiveMode: true,
+    results: safeResults,
+    snapshot: null,
+    temp: 1,
+    calib: null,
+    reachCalib: null,
+    calibDeltas: null,
+    reachMarketsApplied: null,
+    blended: false,
+    refreshing: false,
+    tblView: 'model'
+  });
+  if (recompute && hadResults) {
+    return this.recompute(1, null, null, { archiveStateCleared: true });
+  }
+  return Promise.resolve(null);
 };
 
 /* ---- worker plumbing ---- */
@@ -401,6 +500,7 @@ App.prototype.bootWorker = function () {
   try {
     this.worker = new Worker('./sim.worker.js');
     this.worker.onmessage = function (ev) {
+      if (self._disposed) return;
       var msg = ev.data || {};
       if (msg.type === 'ready') { self._workerReady = true; return; }
       if (msg.type === 'error') {
@@ -412,6 +512,7 @@ App.prototype.bootWorker = function () {
       if (p) { p.resolve(msg); delete self._pending[msg.id]; }
     };
     this.worker.onerror = function (e) {
+      if (self._disposed) return;
       self.setState({ workerErr: (e && e.message) || 'worker error', simming: false, recomputing: false });
     };
   } catch (e) {
@@ -443,12 +544,22 @@ App.prototype.calibrateWorker = function (championMarket, opts) {
   if (this.worker) {
     var id = ++this._reqId;
     return new Promise(function (resolve, reject) {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
       self.worker.postMessage({ id: id, type: 'calibrate', championMarket: championMarket, opts: opts });
     });
   }
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.calibrate(championMarket, opts)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
+      resolve(ENG.calibrate(championMarket, opts));
+    }, 0);
   });
 };
 
@@ -460,12 +571,22 @@ App.prototype.calibrateChampionWorker = function (championMarket, opts) {
   if (this.worker) {
     var id = ++this._reqId;
     return new Promise(function (resolve, reject) {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
       self.worker.postMessage({ id: id, type: 'calibrateChampion', championMarket: championMarket, opts: opts });
     });
   }
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.calibrateChampion(championMarket, opts)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
+      resolve(ENG.calibrateChampion(championMarket, opts));
+    }, 0);
   });
 };
 
@@ -477,12 +598,22 @@ App.prototype.calibrateReachWorker = function (reachMarkets, opts) {
   if (this.worker) {
     var id = ++this._reqId;
     return new Promise(function (resolve, reject) {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
       self.worker.postMessage({ id: id, type: 'calibrateReach', reachMarkets: reachMarkets, opts: opts });
     });
   }
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.calibrateReach(reachMarkets, opts)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed || !marketWorkAllowed()) {
+        reject(marketLifecycleError());
+        return;
+      }
+      resolve(ENG.calibrateReach(reachMarkets, opts));
+    }, 0);
   });
 };
 
@@ -491,41 +622,137 @@ App.prototype.calibrateReachWorker = function (reachMarkets, opts) {
 App.prototype.buildReachMarkets = function (snap, champNorm) {
   if (!snap) return null;
   var rm = {};
-  if (snap.reachR16 && Object.keys(snap.reachR16).length) rm.r16 = snap.reachR16;
-  if (snap.reachQF && Object.keys(snap.reachQF).length) rm.qf = snap.reachQF;
-  if (snap.reachSF && Object.keys(snap.reachSF).length) rm.sf = snap.reachSF;
-  if (snap.reachFinal && Object.keys(snap.reachFinal).length) rm.final = snap.reachFinal;
+  var hasReachBasket = false;
+  function add(record, key) {
+    if (record && LIFE.marketRecordUsability(record, 'prices').usable) {
+      rm[key] = record.prices;
+      hasReachBasket = true;
+    }
+  }
+  add(snap.reachR16, 'r16');
+  add(snap.reachQF, 'qf');
+  add(snap.reachSF, 'sf');
+  add(snap.reachFinal, 'final');
+  if (!hasReachBasket) return null;
   if (champNorm && Object.keys(champNorm).length) rm.champion = champNorm;
-  return Object.keys(rm).length ? rm : null;
+  return rm;
+};
+
+App.prototype.reachMarketsUsable = function (snap, reachMarkets) {
+  if (!reachMarkets) return true;
+  var source = {
+    r16: snap && snap.reachR16,
+    qf: snap && snap.reachQF,
+    sf: snap && snap.reachSF,
+    final: snap && snap.reachFinal
+  };
+  return Object.keys(reachMarkets).every(function (key) {
+    if (key === 'champion') return true; // covered by snapshotUsability()
+    return LIFE.marketRecordUsability(source[key], 'prices').usable;
+  });
 };
 
 /* ---- pipeline ---- */
 App.prototype.runBaseline = function () {
   var self = this;
+  if (this._disposed) return Promise.resolve(null);
   this.setState({ simming: true });
-  this.simulate({ N: this.state.N, temperature: 1, seed: 0x9E3779B9 }).then(function (res) {
-    self.setState({ baseline: res, results: res, simming: false, phase: 'ready' });
-    // then layer in live markets
-    self.refreshMarkets(true);
-    self._refreshTimer = setInterval(function () { self.refreshMarkets(false); }, 5 * 60 * 1000);
+  return this.simulate({ N: this.state.N, temperature: 1, seed: 0x9E3779B9 }).then(function (res) {
+    if (self._disposed) return null;
+    self.setState({ baseline: res, results: res, simming: false, phase: 'ready' }, function () {
+      if (!LIFE || !LIFE.shouldPollMarkets(Date.now())) {
+        self.enterArchiveMode(false);
+        return;
+      }
+      // During the tournament only, layer in an open market snapshot.
+      self.refreshMarkets(true);
+      self._refreshTimer = setInterval(function () { self.refreshMarkets(false); }, 5 * 60 * 1000);
+    });
   }).catch(function (e) {
+    if (self._disposed) return null;
     self.setState({ simming: false, workerErr: String(e && e.message || e) });
+    return null;
   });
 };
 
 // fetch markets, calibrate, then re-simulate blended (with any what-if locks).
 App.prototype.refreshMarkets = function (force) {
   var self = this;
-  if (!MK) return;
+  if (this._disposed) return Promise.resolve(null);
+  if (!MK) return Promise.resolve(null);
+  if (!LIFE) return this.enterArchiveMode(true);
+  var marketEpoch = ++this._marketEpoch;
+  var marketApplied = false;
+
+  function cycleUsable(snap, reachMarkets) {
+    return !self._disposed && marketEpoch === self._marketEpoch &&
+      LIFE.shouldUseMarketSnapshot(snap, Date.now()) &&
+      self.reachMarketsUsable(snap, reachMarkets);
+  }
+
+  function stopExpiredCycle() {
+    if (self._disposed) return Promise.resolve(null);
+    if (!LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
+    return Promise.resolve(null); // superseded by a newer refresh
+  }
+
+  function resetToModelOnly() {
+    if (self._disposed) return Promise.resolve(null);
+    self.setState({
+      results: self.state.baseline || null,
+      snapshot: null,
+      temp: 1,
+      calib: null,
+      reachCalib: null,
+      calibDeltas: null,
+      reachMarketsApplied: null,
+      refreshing: false,
+      blended: false,
+      tblView: 'model'
+    });
+    return self.recompute(1, null, null);
+  }
+
+  function applyMarketFit(snap, fit, reachFit, temp, deltas, reachMarkets) {
+    // Final guard immediately before state mutation and market-derived sim.
+    if (!cycleUsable(snap, reachMarkets)) return stopExpiredCycle();
+    marketApplied = true;
+    self.setState({
+      snapshot: snap,
+      calib: fit,
+      reachCalib: reachFit || null,
+      temp: temp,
+      calibDeltas: deltas,
+      reachMarketsApplied: reachMarkets || null
+    });
+    return self.recompute(temp, snap, deltas, {
+      marketEpoch: marketEpoch,
+      reachMarkets: reachMarkets || null
+    });
+  }
+
   this.setState({ refreshing: true });
-  MK.fetchAll({ force: !!force }).then(function (snap) {
-    self.setState({ snapshot: snap });
+  return LIFE.loadUsableMarketSnapshot(function () {
+    return MK.fetchAll({ force: !!force });
+  }).then(function (marketState) {
+    if (self._disposed) return null;
+    if (marketState.reason === 'archive-cutoff') return self.enterArchiveMode(true);
+    if (marketEpoch !== self._marketEpoch) return null;
+    if (!marketState.usable) {
+      return resetToModelOnly();
+    }
+    var snap = marketState.snapshot;
     var champ = snap.champion && snap.champion.normalized;
     if (champ && Object.keys(champ).length) {
       // Two-stage fit on a smaller N for speed: temperature pre-step + per-team
       // Elo rake so the sim champion vector can match (and reorder to) the
       // market. Then full re-sim with both temp AND the per-team deltas.
+      if (!cycleUsable(snap)) return stopExpiredCycle();
       return self.calibrateChampionWorker(champ, { N: 5000, iters: 4, grid: [0.7, 0.9, 1.1, 1.3, 1.5, 1.7, 2.0] }).then(function (fit) {
+        if (self._disposed) return null;
+        // A calibration started before the cutoff may finish after it. Never
+        // launch reach calibration or apply that fit without checking again.
+        if (!cycleUsable(snap)) return stopExpiredCycle();
         var temp = (fit && fit.s) ? fit.s : 1;
         var deltas = (fit && fit.deltas) ? fit.deltas : null;
         // Second pass: rake the deltas toward the reach-stage markets (R16/QF/SF/
@@ -534,36 +761,82 @@ App.prototype.refreshMarkets = function (force) {
         // or the rake errors — never block the blended render.
         var reachMk = self.buildReachMarkets(snap, champ);
         if (reachMk) {
+          if (!cycleUsable(snap, reachMk)) return stopExpiredCycle();
           return self.calibrateReachWorker(reachMk, { N: 5000, iters: 5, s: temp, deltas: deltas }).then(function (rfit) {
+            if (self._disposed) return null;
+            if (!cycleUsable(snap, reachMk)) return stopExpiredCycle();
             var rtemp = (rfit && rfit.s) ? rfit.s : temp;
             var rdeltas = (rfit && rfit.deltas) ? rfit.deltas : deltas;
-            self.setState({ calib: fit, reachCalib: rfit, temp: rtemp, calibDeltas: rdeltas });
-            return self.recompute(rtemp, snap, rdeltas);
+            return applyMarketFit(snap, fit, rfit, rtemp, rdeltas, reachMk);
           }, function () {
-            self.setState({ calib: fit, temp: temp, calibDeltas: deltas });
-            return self.recompute(temp, snap, deltas);
+            if (self._disposed) return null;
+            if (!cycleUsable(snap)) return stopExpiredCycle();
+            return applyMarketFit(snap, fit, null, temp, deltas, null);
           });
         }
-        self.setState({ calib: fit, temp: temp, calibDeltas: deltas });
-        return self.recompute(temp, snap, deltas);
+        return applyMarketFit(snap, fit, null, temp, deltas, null);
       });
     }
-    return self.recompute(self.state.temp, snap);
+    return resetToModelOnly();
   }).then(function () {
-    self.setState({ refreshing: false, updatedAt: new Date(), blended: true });
+    if (self._disposed) return null;
+    if (marketApplied && !LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
+    if (marketApplied && marketEpoch === self._marketEpoch && LIFE.shouldPollMarkets(Date.now())) {
+      self.setState({ refreshing: false, updatedAt: new Date(), blended: true });
+    }
   }).catch(function (e) {
-    self.setState({ refreshing: false });
+    if (self._disposed) return null;
+    if (!LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
+    if (marketEpoch === self._marketEpoch) self.setState({ refreshing: false });
+    return null;
   });
 };
 
 // build group overrides + locked results from snapshot & what-if, re-simulate.
-App.prototype.recompute = function (temp, snap, deltas) {
+App.prototype.recompute = function (temp, snap, deltas, opts) {
   var self = this;
-  snap = snap || this.state.snapshot;
-  temp = temp || this.state.temp;
-  // per-team Elo deltas from the champion rake (reorder to market). Fall back to
-  // the last calibrated deltas so what-if recomputes keep the market fit.
-  if (deltas === undefined) deltas = this.state.calibDeltas || null;
+  if (this._disposed) return Promise.resolve(null);
+  opts = opts || {};
+  var archiveNow = !LIFE || !LIFE.shouldPollMarkets(Date.now());
+  if (archiveNow) {
+    if (!opts.archiveStateCleared) this.enterArchiveMode(false);
+    snap = null;
+    temp = 1;
+    deltas = null;
+  } else {
+    if (opts.marketEpoch != null && opts.marketEpoch !== this._marketEpoch) {
+      return Promise.resolve(null);
+    }
+    if (snap === undefined) snap = this.state.snapshot;
+    if (temp === undefined) temp = this.state.temp;
+    if (opts.reachMarkets === undefined) {
+      opts.reachMarkets = this.state.reachMarketsApplied || null;
+    }
+    // per-team Elo deltas from the market rake. A market-derived temperature or
+    // delta vector is never valid without the same explicitly-open snapshot.
+    if (deltas === undefined) deltas = this.state.calibDeltas || null;
+    if (!snap || !LIFE.shouldUseMarketSnapshot(snap, Date.now()) ||
+        !this.reachMarketsUsable(snap, opts.reachMarkets)) {
+      snap = null;
+      temp = 1;
+      deltas = null;
+      if (this.state.snapshot || this.state.calib || this.state.calibDeltas || this.state.blended) {
+        this.setState({
+          results: this.state.baseline || null,
+          snapshot: null,
+          temp: 1,
+          calib: null,
+          reachCalib: null,
+          calibDeltas: null,
+          reachMarketsApplied: null,
+          blended: false,
+          tblView: 'model'
+        });
+      }
+    }
+  }
+  var marketDerived = !!snap || !!deltas || temp !== 1;
+  var marketEpoch = opts.marketEpoch != null ? opts.marketEpoch : this._marketEpoch;
   this.setState({ recomputing: true });
 
   var groupOverrides = {};
@@ -571,7 +844,17 @@ App.prototype.recompute = function (temp, snap, deltas) {
     Object.keys(snap.perMatch).forEach(function (no) {
       var pm = snap.perMatch[no];
       var dv = pm && pm.devigged;
-      if (dv && dv.pA != null) groupOverrides[no] = { pA: dv.pA, pD: dv.pD, pB: dv.pB };
+      if (LIFE.perMatchUsability(pm).usable) {
+        groupOverrides[no] = { pA: dv.pA, pD: dv.pD, pB: dv.pB };
+      }
+    });
+  }
+
+  function appliedMarketInputsUsable() {
+    if (!snap || !LIFE.shouldUseMarketSnapshot(snap, Date.now()) ||
+        !self.reachMarketsUsable(snap, opts.reachMarkets)) return false;
+    return Object.keys(groupOverrides).every(function (no) {
+      return LIFE.perMatchUsability(snap.perMatch[no]).usable;
     });
   }
 
@@ -596,6 +879,37 @@ App.prototype.recompute = function (temp, snap, deltas) {
     seed: 0x9E3779B9
   };
   return this.simulate(cfg).then(function (res) {
+    if (self._disposed) return null;
+    // Never commit a market-derived simulation that completed after cutoff or
+    // after a newer market cycle invalidated it. Re-run from frozen model state.
+    if (marketDerived && marketEpoch !== self._marketEpoch) return null;
+    if (marketDerived && !appliedMarketInputsUsable()) {
+      if (!LIFE.shouldPollMarkets(Date.now())) {
+        return self.enterArchiveMode(false).then(function () {
+          return self.recompute(1, null, null, { archiveStateCleared: true });
+        });
+      }
+      self.setState({
+        results: self.state.baseline || null,
+        snapshot: null,
+        temp: 1,
+        calib: null,
+        reachCalib: null,
+        calibDeltas: null,
+        reachMarketsApplied: null,
+        blended: false,
+        tblView: 'model'
+      });
+      return self.recompute(1, null, null);
+    }
+    if (marketDerived && (!LIFE || !LIFE.shouldPollMarkets(Date.now()))) {
+      return self.enterArchiveMode(false).then(function () {
+        return self.recompute(1, null, null, { archiveStateCleared: true });
+      });
+    }
+    if (!marketDerived && (!LIFE || !LIFE.shouldPollMarkets(Date.now()))) {
+      self.enterArchiveMode(false);
+    }
     self.setState({ results: res, recomputing: false });
     return res;
   });
@@ -700,7 +1014,7 @@ App.prototype.openPath = function (code) {
  * ====================================================================== */
 App.prototype.render = function () {
   var st = this.state || {};
-  var lang = (st.lang === 'en' || st.lang === 'zh') ? st.lang : 'zh';
+  var lang = (st.lang === 'en' || st.lang === 'zh') ? st.lang : 'en';
   CUR_LANG = lang; // helpers (teamName/shortName/cityName) read this
   var T = I18N[lang];
   var self = this;
@@ -726,14 +1040,14 @@ App.prototype.render = function () {
   </main>
   ${this.renderSheet(T, lang)}
   <footer style="padding:22px 16px calc(34px + env(safe-area-inset-bottom));text-align:center;font-size:11px;color:#6F6856;line-height:1.7">
-    ${T.footer}
+    ${st.archiveMode ? T.footer : T.footerActive}
   </footer>
 </div>`;
 };
 
 /* ---- header (accent band reused from reference) ---- */
 App.prototype.renderHeader = function (T, lang) {
-  var self = this;
+  var self = this, archived = this.state.archiveMode;
   return html`
 <div style="position:relative;overflow:hidden;background:#142019;color:#F4F0E4;padding:calc(22px + env(safe-area-inset-top)) calc(18px + env(safe-area-inset-right)) 18px calc(18px + env(safe-area-inset-left))">
   <span style="position:absolute;right:-12px;top:-40px;font-family:'Anton',sans-serif;font-size:190px;line-height:1;color:rgba(244,240,228,.07);letter-spacing:-6px;pointer-events:none">26</span>
@@ -742,8 +1056,8 @@ App.prototype.renderHeader = function (T, lang) {
     <span>${T.window}</span><span style="width:4px;height:4px;border-radius:50%;background:#C8332B"></span><span>WORLDCUP<span style="color:#E8C25A">ODDS</span></span>
   </div>
   <div style="margin-top:9px;font-family:'Barlow Condensed','Noto Sans SC',sans-serif;font-weight:700;font-size:clamp(30px,7vw,44px);line-height:1.05;letter-spacing:.5px">${lang === 'en'
-    ? html`World Cup <span style="font-family:'Anton',sans-serif;color:#E8C25A;letter-spacing:1px">2026</span> Live Odds · Pick Your Ticket`
-    : html`世界杯 <span style="font-family:'Anton',sans-serif;color:#E8C25A;letter-spacing:1px">2026</span> 实时概率 · 看球买票`}</div>
+    ? html`World Cup <span style="font-family:'Anton',sans-serif;color:#E8C25A;letter-spacing:1px">2026</span> ${archived ? 'Probability Archive' : 'Probability Explorer'}`
+    : html`世界杯 <span style="font-family:'Anton',sans-serif;color:#E8C25A;letter-spacing:1px">2026</span> ${archived ? '概率模型归档' : '概率探索器'}`}</div>
   <div style="margin-top:8px;font-size:12.5px;color:#B9C4B6">${T.tagline}</div>
 </div>
 <div style="height:5px;display:flex"><i style="flex:1;background:#C8332B"></i><i style="flex:1;background:#0E8C4F"></i><i style="flex:1;background:#1D5FBF"></i></div>`;
@@ -752,6 +1066,15 @@ App.prototype.renderHeader = function (T, lang) {
 /* ---- live status bar ---- */
 App.prototype.renderStatusBar = function (T, lang) {
   var st = this.state, self = this;
+  if (st.archiveMode) {
+    return html`
+<div style="position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#1B2A21;color:#D8E2D5;padding:7px calc(14px + env(safe-area-inset-right)) 7px calc(14px + env(safe-area-inset-left));font-size:11.5px;border-bottom:1px solid #0E1B15">
+  <span style="display:flex;align-items:center;gap:6px;font-weight:700;color:#EEF3EC"><span style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#E8C25A"></span>${T.statusArchive}</span>
+  <span style="color:#9FB8A8">${T.modelAsOf}</span>
+  <span style="flex:1"></span>
+  <span style="color:#9FB8A8">N=${st.N.toLocaleString()}</span>
+</div>`;
+  }
   var blended = st.blended;
   var label = blended ? T.statusBlend : T.statusModel;
   var time = st.updatedAt ? st.updatedAt.toLocaleTimeString(lang === 'en' ? 'en-US' : 'zh-CN', { hour: '2-digit', minute: '2-digit' }) : '';
@@ -1280,12 +1603,16 @@ App.prototype.renderTable = function (T, lang) {
   if (!res) return html`<section style="max-width:980px;margin:0 auto;padding:16px 14px"><div class="shim" style="height:200px;border-radius:12px"></div></section>`;
 
   // market marginals per stage (where available), basket-normalized already.
+  function reachPrices(record) {
+    return record && LIFE && LIFE.marketRecordUsability(record, 'prices').usable
+      ? record.prices : null;
+  }
   var mkt = {
     r32: snap && snap.advance ? snap.advance : null,
-    r16: snap && snap.reachR16 ? snap.reachR16 : null,
-    qf: snap && snap.reachQF ? snap.reachQF : null,
-    sf: snap && snap.reachSF ? snap.reachSF : null,
-    final: snap && snap.reachFinal ? snap.reachFinal : null,
+    r16: snap ? reachPrices(snap.reachR16) : null,
+    qf: snap ? reachPrices(snap.reachQF) : null,
+    sf: snap ? reachPrices(snap.reachSF) : null,
+    final: snap ? reachPrices(snap.reachFinal) : null,
     champion: snap && snap.champion ? snap.champion.normalized : null
   };
 
@@ -1328,7 +1655,7 @@ App.prototype.renderTable = function (T, lang) {
       var dis = (m[0] !== 'model' && !hasMarket);
       return html`<button class="pressable" disabled=${dis} onClick=${function () { if (!dis) self.setState({ tblView: m[0] }); }} style=${'padding:7px 14px;border-radius:8px;border:1px solid ' + (on ? '#191D17' : '#D8D2BE') + ';background:' + (on ? '#191D17' : '#FFF') + ';color:' + (on ? '#F2EEE2' : (dis ? '#C0BAA6' : '#191D17')) + ';font-weight:600;font-size:12.5px;cursor:' + (dis ? 'default' : 'pointer')}>${m[1]}</button>`;
     })}
-    ${!hasMarket && html`<span style="font-size:11px;color:#8B8770">${lang === 'en' ? 'market loading…' : '行情加载中…'}</span>`}
+    ${!hasMarket && !st.archiveMode && html`<span style="font-size:11px;color:#8B8770">${lang === 'en' ? 'market loading…' : '行情加载中…'}</span>`}
   </div>
 
   <div style="overflow-x:auto;-webkit-overflow-scrolling:touch;border:1px solid #DCD6C2;border-radius:12px;background:#FFF">
@@ -1458,6 +1785,10 @@ App.prototype.renderWhatif = function (T, lang) {
 };
 
 /* ---------------- mount -------------------------------------------------- */
+// A deliberately tiny test seam: production leaves __WCO_TEST__ undefined,
+// while deterministic integration tests can exercise the real App lifecycle.
+if (window.__WCO_TEST__) window.__WCO_TEST__.App = App;
+
 if (!WC || !ENG) {
   document.getElementById('app').innerHTML =
     '<div style="padding:40px;font-family:sans-serif;color:#A23227">data.js / engine.js failed to load.</div>';
