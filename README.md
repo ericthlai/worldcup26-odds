@@ -17,7 +17,7 @@ python -m http.server 8766
 # open http://localhost:8766
 ```
 
-No build step, no dependencies to install. Preact + htm are vendored (`preact.min.umd.js`, `htm.umd.js`).
+No build step, no dependencies to install. Preact + htm are vendored (`preact.min.umd.js`, `htm.umd.js`); reproducible hashes and licenses are recorded in [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ## Deploy (GitHub Pages)
 
@@ -72,6 +72,7 @@ sim.worker.js       Web Worker wrapper around the engine
 markets.js          window.WCMarkets — Polymarket Gamma API fetch + de-vig + normalization
 lifecycle.js        window.WCOLifecycle — cutoff and settled-market policy
 app.js              Preact UI — the four views, status bar, what-if
+THIRD_PARTY_NOTICES.md  verified vendored-bundle hashes and licenses
 test/               engine self-checks + adversarial Annex C verification
 dev/                reference copy of the sister prediction app (provenance only)
 ```
@@ -87,4 +88,4 @@ dev/                reference copy of the sister prediction app (provenance only
 - De-vigging is a simple proportional (sum-to-1) normalization, not a more accurate method (e.g. Shin's); it can slightly over- or under-correct heavy favorites vs. longshots.
 - Elo ratings are a static late-2025/mid-2026 approximation (see the `data.js` header). The archived app does not refresh them.
 - The historical Gamma adapter uses the sunset `/events?slug=` route. It is retained for code review, but archive mode does not invoke it and no future availability is claimed.
-- Preact and htm are vendored without recorded upstream version metadata. Their exact artifact provenance should be pinned before treating this repository as a redistributable package.
+- The vendored Preact bytes match the official 10.26.4 npm artifact. The htm bytes match releases 3.0.1 through 3.1.1, so the exact htm release cannot be recovered; see `THIRD_PARTY_NOTICES.md`.
