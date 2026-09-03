@@ -31,6 +31,7 @@ Push this folder to a GitHub repo and enable Pages on the root. Live odds fetch 
 node test/engine.test.mjs
 node test/selfcheck.js
 node test/test-annexc-adversarial.js
+node test/fixtures.test.mjs
 ```
 
 These run on every push via GitHub Actions.
@@ -49,7 +50,7 @@ Plus a **What-if** panel: lock a group winner or a finished result and watch the
 | Layer | What it does |
 |---|---|
 | **Ratings** | Hardcoded World-Football-Elo-style ratings for all 48 teams (`data.js`, `ELO`). eloratings.net isn't client-fetchable, so the seed is static; live-ness comes from the markets. |
-| **Match model** | Elo gap → goal supremacy → two independent Poisson goal counts → score grid → W/D/L, with a Dixon-Coles low-score correction (ρ = −0.11) so draws land at a realistic ~25–28%. Knockout draws resolve via a penalty coin-flip nudged to the stronger side. Host advantage (+100 Elo) applies to the USA's group matches and to all knockout matches; it is not yet wired up for Mexico's or Canada's own group-stage games (see Known limitations). |
+| **Match model** | Elo gap → goal supremacy → two independent Poisson goal counts → score grid → W/D/L, with a Dixon-Coles low-score correction (ρ = −0.11) so draws land at a realistic ~25–28%. Knockout draws resolve via a penalty coin-flip nudged to the stronger side. Host advantage (+100 Elo) applies to all three co-hosts' (USA/Mexico/Canada) group matches and to all knockout matches. |
 | **Tournament** | `simulate()` runs N = 20,000 tournaments (seeded `mulberry32`) in a Web Worker. Group round-robin with FIFA tiebreakers → top-2 auto-advance + 8 best third-placed → **FIFA Annex C** assignment of thirds to Round-of-32 slots → single-elimination to the final. Accumulates per-team stage-reach and per-slot matchup co-occurrence counters; every probability is a Monte-Carlo frequency. |
 | **Best-third** | Uses the **literal 495-row FIFA Annex C lookup table** (`data.js`, `ANNEXC_TABLE`), transcribed from the official FIFA 2026 Competition Regulations PDF. (Eligibility + bipartite matching alone does **not** uniquely reproduce FIFA's published assignment — most qualifying sets admit several legal matchings.) |
 | **Market blend** | (1) **Champion calibration** — de-vig the Polymarket champion market, then a per-team Elo-delta rake so the model's title odds match the market ordering (a single temperature can't reorder Elo). (2) **Group overrides** — played/live group matches use de-vigged Polymarket W/D/L. (3) Reach-stage markets (advance, R16/QF/SF/Final) are shown side-by-side for comparison. |
@@ -70,9 +71,9 @@ dev/                reference copy of the sister prediction app (provenance only
 
 ## Known limitations
 
-- Host-country advantage (+100 Elo) is fully modeled for the USA's group matches, but is not yet wired up for Mexico's or Canada's own group-stage games (knockout-stage host advantage works correctly for all three co-hosts).
-- The "lock a group winner" what-if control only forces the specific group matches the engine has live data for. For Mexico and Canada it currently has no effect at all; for most other teams it only force-wins 1-2 of their 3 group games, not a guaranteed group win.
-- Live Polymarket odds and result-locking only cover the 52 US-hosted group matches; the 20 group matches hosted in Mexico and Canada always run on the pure Elo model, with no live-market or what-if override available.
+- Host-country advantage (+100 Elo) is fully modeled for all three co-hosts' group matches (USA, Mexico, Canada) as well as every knockout match. `WC.GM` now lists all 72 group matches (`test/fixtures.test.mjs` guards this).
+- The "lock a group winner" what-if control force-wins all 3 of a team's group matches for every one of the 48 teams, including Mexico and Canada.
+- Polymarket W/D/L overrides cover only the 52 group matches available at initial launch. The 20 fixtures added later (mostly Mexico/Canada-hosted, plus two additional US-hosted gaps) use the Elo model unless the user applies a what-if group-winner lock; those locks work across all 72 fixtures. Polymarket's per-match slugs (`markets.js`, `ODDS_SLUGS`) have not been extended to the 20 added fixtures.
 - Group tiebreaks use points, then goal difference, then goals scored, then Elo as a stand-in for fair play / drawing of lots. The official FIFA head-to-head step (used when teams are level on all three of the above) is not implemented, so some ties that FIFA would break by head-to-head record are instead broken by rating.
 - The model is calibrated to Polymarket's champion market, not validated against it out-of-sample — it mirrors the market, it doesn't beat it. **Not betting advice.** Schedule and kickoff times follow FIFA's official sources.
 - De-vigging is a simple proportional (sum-to-1) normalization, not a more accurate method (e.g. Shin's); it can slightly over- or under-correct heavy favorites vs. longshots.
