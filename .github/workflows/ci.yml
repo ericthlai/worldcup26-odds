@@ -16,9 +16,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 22
-      - name: Run engine tests
+      - name: Run deterministic tests
         run: |
           node test/engine.test.mjs
           node test/selfcheck.js
           node test/test-annexc-adversarial.js
           node test/fixtures.test.mjs
+          node --test test/lifecycle.test.mjs

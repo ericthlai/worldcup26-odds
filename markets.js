@@ -238,7 +238,13 @@
       var ev = bySlug['world-cup-winner'];
       var raw = eventToCodeMap(ev);
       var normalized = normalizeBasket(raw, 1);
-      return { code: raw, normalized: normalized };
+      return {
+        code: raw,
+        normalized: normalized,
+        closed: ev ? !!ev.closed : null,
+        active: ev ? ev.active !== false : null,
+        endDate: ev && ev.endDate ? ev.endDate : null
+      };
     });
   }
 
@@ -357,7 +363,7 @@
    *
    * Resolves to:
    * {
-   *   champion:   { code:{code->p}, normalized:{code->p sum 1} },
+   *   champion:   { code:{code->p}, normalized:{code->p sum 1}, closed, active, endDate },
    *   advance:    { code->p }                  // R32 qualify marginal (~well-calibrated)
    *   groupWinner:{ 'A'..'L' -> {code->p sum 1} },
    *   reachR16:   { code->p basket-normalized to 16 },
@@ -381,7 +387,9 @@
 
     var errors = [];
     var jobs = {
-      champion:   guard('world-cup-winner', fetchChampion(), { code: {}, normalized: {} }, errors),
+      champion:   guard('world-cup-winner', fetchChampion(), {
+        code: {}, normalized: {}, closed: null, active: null, endDate: null
+      }, errors),
       advance:    guard('world-cup-team-to-advance-to-knockout-stages', fetchAdvance(), {}, errors),
       groupWinner:guard('world-cup-group-{a..l}-winner', fetchGroupWinner(), {}, errors),
       reachR16:   guard('world-cup-nation-to-reach-round-of-16',  fetchReach('world-cup-nation-to-reach-round-of-16', 16),  {}, errors),
