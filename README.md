@@ -40,7 +40,7 @@ node --test test/app-lifecycle.test.mjs
 node --test test/worker-errors.test.mjs
 ```
 
-These run on every push via GitHub Actions. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
+GitHub Actions runs these on every pull request and on every push to `main`. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
 
 ## The four views
 
