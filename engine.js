@@ -15,14 +15,16 @@
  *     A greedy eligibility matcher is kept only as a last-resort fallback.
  *   - Monte Carlo with mulberry32 PRNG, typed-array accumulators.
  *
- * Market calibration (see calibrate / calibrateChampion):
+ * Market calibration (see calibrate / calibrateChampion / calibrateReach):
  *   - calibrate(): grid-search a global temperature s that scales the Elo gap.
  *     s<1 flattens toward 50/50, s>1 sharpens; the grid spans both sides of 1.
  *   - calibrateChampion(): adds a per-team Elo-delta rake (IPF) so the sim
  *     champion vector can MATCH and REORDER to a market that disagrees with the
  *     Elo ranking (a scalar temperature alone can only stretch/compress it).
- *   - Reach-stage markets are NOT raked into the sim here (the app shows them
- *     side-by-side only); see app.js header for the rationale.
+ *   - calibrateReach(): refits the same per-team Elo-delta vector against the
+ *     R16/QF/SF/Final reach baskets and the champion market. The R32
+ *     (to-advance) basket is not fitted and stays comparison-only; see the
+ *     app.js header.
  * ==========================================================================*/
 (function (root) {
   'use strict';
