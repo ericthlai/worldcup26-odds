@@ -87,8 +87,8 @@ dev/                reference copy of the sister prediction app (provenance only
 
 ## How this was built
 - **I decided:** the match model (an Elo gap turned into independent Poisson goal counts with a Dixon-Coles low-score correction), calibrating title odds to Polymarket's de-vigged champion market, using the FIFA Annex C table as the source of truth for third-place slots, and the scope limits listed below.
-- **The agent generated:** a large share of the implementation. 4 of 12 commits carry a Claude co-author trailer; not every agent session leaves one, so treat that count as a lower bound.
-- **I verified:** with the three test scripts under `test/` (engine checks, self-checks, and an adversarial comparison against official Annex C rows), run in CI on every push and pull request.
+- **The agents generated:** a large share of the implementation (Claude Code, later OpenAI Codex). 4 of 20 commits carry a co-author trailer; not every agent session leaves one, so treat that count as a lower bound.
+- **I verified:** with the suites under `test/` (engine checks, self-checks, an adversarial comparison against official Annex C rows, fixture coverage, and no-network lifecycle and worker-failure integration tests), run in CI on every push and pull request.
 
 ## Known limitations
 
