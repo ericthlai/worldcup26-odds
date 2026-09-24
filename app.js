@@ -431,7 +431,7 @@ App.prototype.componentWillUnmount = function () {
   }
   this._onVisibilityChange = null;
   this._marketEpoch += 1;
-  if (this.worker) this.worker.terminate();
+  this.stopWorker(new Error('App unmounted'));
 };
 
 var MAX_TIMEOUT_MS = 0x7fffffff;
@@ -495,6 +495,20 @@ App.prototype.enterArchiveMode = function (recompute) {
 };
 
 /* ---- worker plumbing ---- */
+// Startup/runtime worker failures have no request id. Settle every caller so
+// no refresh or what-if action stays pending after the worker has stopped.
+App.prototype.stopWorker = function (error) {
+  if (this.worker) this.worker.terminate();
+  this.worker = null;
+  this._workerReady = false;
+  var pending = this._pending;
+  this._pending = {};
+  Object.keys(pending).forEach(function (id) { pending[id].reject(error); });
+  if (!this._disposed) {
+    this.setState({ workerErr: error.message, simming: false, recomputing: false, refreshing: false });
+  }
+};
+
 App.prototype.bootWorker = function () {
   var self = this;
   try {
@@ -504,6 +518,7 @@ App.prototype.bootWorker = function () {
       var msg = ev.data || {};
       if (msg.type === 'ready') { self._workerReady = true; return; }
       if (msg.type === 'error') {
+        if (msg.id == null) { self.stopWorker(new Error(msg.message || 'worker startup failed')); return; }
         self.setState({ workerErr: msg.message, simming: false, recomputing: false });
         var p0 = self._pending[msg.id]; if (p0) { p0.reject(new Error(msg.message)); delete self._pending[msg.id]; }
         return;
@@ -513,7 +528,7 @@ App.prototype.bootWorker = function () {
     };
     this.worker.onerror = function (e) {
       if (self._disposed) return;
-      self.setState({ workerErr: (e && e.message) || 'worker error', simming: false, recomputing: false });
+      self.stopWorker(new Error((e && e.message) || 'worker error'));
     };
   } catch (e) {
     self.worker = null; // fall back to main-thread sim
@@ -530,12 +545,20 @@ App.prototype.simulate = function (config) {
         resolve: function (msg) { resolve(msg.results); },
         reject: reject
       };
-      self.worker.postMessage({ id: id, type: 'simulate', config: config });
+      try {
+        self.worker.postMessage({ id: id, type: 'simulate', config: config });
+      } catch (e) {
+        delete self._pending[id];
+        reject(e);
+      }
     });
   }
   // main-thread fallback
-  return new Promise(function (resolve) {
-    setTimeout(function () { resolve(ENG.simulate(config)); }, 0);
+  return new Promise(function (resolve, reject) {
+    setTimeout(function () {
+      if (self._disposed) { reject(new Error('App unmounted')); return; }
+      try { resolve(ENG.simulate(config)); } catch (e) { reject(e); }
+    }, 0);
   });
 };
 
@@ -549,7 +572,12 @@ App.prototype.calibrateWorker = function (championMarket, opts) {
         return;
       }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
-      self.worker.postMessage({ id: id, type: 'calibrate', championMarket: championMarket, opts: opts });
+      try {
+        self.worker.postMessage({ id: id, type: 'calibrate', championMarket: championMarket, opts: opts });
+      } catch (e) {
+        delete self._pending[id];
+        reject(e);
+      }
     });
   }
   return new Promise(function (resolve, reject) {
@@ -558,7 +586,7 @@ App.prototype.calibrateWorker = function (championMarket, opts) {
         reject(marketLifecycleError());
         return;
       }
-      resolve(ENG.calibrate(championMarket, opts));
+      try { resolve(ENG.calibrate(championMarket, opts)); } catch (e) { reject(e); }
     }, 0);
   });
 };
@@ -576,7 +604,12 @@ App.prototype.calibrateChampionWorker = function (championMarket, opts) {
         return;
       }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
-      self.worker.postMessage({ id: id, type: 'calibrateChampion', championMarket: championMarket, opts: opts });
+      try {
+        self.worker.postMessage({ id: id, type: 'calibrateChampion', championMarket: championMarket, opts: opts });
+      } catch (e) {
+        delete self._pending[id];
+        reject(e);
+      }
     });
   }
   return new Promise(function (resolve, reject) {
@@ -585,7 +618,7 @@ App.prototype.calibrateChampionWorker = function (championMarket, opts) {
         reject(marketLifecycleError());
         return;
       }
-      resolve(ENG.calibrateChampion(championMarket, opts));
+      try { resolve(ENG.calibrateChampion(championMarket, opts)); } catch (e) { reject(e); }
     }, 0);
   });
 };
@@ -603,7 +636,12 @@ App.prototype.calibrateReachWorker = function (reachMarkets, opts) {
         return;
       }
       self._pending[id] = { resolve: function (msg) { resolve(msg.fit); }, reject: reject };
-      self.worker.postMessage({ id: id, type: 'calibrateReach', reachMarkets: reachMarkets, opts: opts });
+      try {
+        self.worker.postMessage({ id: id, type: 'calibrateReach', reachMarkets: reachMarkets, opts: opts });
+      } catch (e) {
+        delete self._pending[id];
+        reject(e);
+      }
     });
   }
   return new Promise(function (resolve, reject) {
@@ -612,7 +650,7 @@ App.prototype.calibrateReachWorker = function (reachMarkets, opts) {
         reject(marketLifecycleError());
         return;
       }
-      resolve(ENG.calibrateReach(reachMarkets, opts));
+      try { resolve(ENG.calibrateReach(reachMarkets, opts)); } catch (e) { reject(e); }
     }, 0);
   });
 };
@@ -659,7 +697,7 @@ App.prototype.runBaseline = function () {
   this.setState({ simming: true });
   return this.simulate({ N: this.state.N, temperature: 1, seed: 0x9E3779B9 }).then(function (res) {
     if (self._disposed) return null;
-    self.setState({ baseline: res, results: res, simming: false, phase: 'ready' }, function () {
+    self.setState({ baseline: res, results: res, simming: false, phase: 'ready', workerErr: null }, function () {
       if (!LIFE || !LIFE.shouldPollMarkets(Date.now())) {
         self.enterArchiveMode(false);
         return;
@@ -778,8 +816,12 @@ App.prototype.refreshMarkets = function (force) {
       });
     }
     return resetToModelOnly();
-  }).then(function () {
+  }).then(function (result) {
     if (self._disposed) return null;
+    if (result === null) {
+      if (marketEpoch === self._marketEpoch) self.setState({ refreshing: false });
+      return null;
+    }
     if (marketApplied && !LIFE.shouldPollMarkets(Date.now())) return self.enterArchiveMode(true);
     if (marketApplied && marketEpoch === self._marketEpoch && LIFE.shouldPollMarkets(Date.now())) {
       self.setState({ refreshing: false, updatedAt: new Date(), blended: true });
@@ -910,8 +952,11 @@ App.prototype.recompute = function (temp, snap, deltas, opts) {
     if (!marketDerived && (!LIFE || !LIFE.shouldPollMarkets(Date.now()))) {
       self.enterArchiveMode(false);
     }
-    self.setState({ results: res, recomputing: false });
+    self.setState({ results: res, recomputing: false, workerErr: null });
     return res;
+  }).catch(function (error) {
+    if (!self._disposed) self.setState({ recomputing: false, workerErr: String(error && error.message || error) });
+    return null;
   });
 };
 
@@ -1066,6 +1111,9 @@ App.prototype.renderHeader = function (T, lang) {
 /* ---- live status bar ---- */
 App.prototype.renderStatusBar = function (T, lang) {
   var st = this.state, self = this;
+  if (st.workerErr) {
+    return html`<div role="alert" style="background:#FFF1ED;color:#A23227;padding:12px 16px;font-size:13px">${lang === 'en' ? 'Simulation failed. Reload the page to retry.' : '模拟失败，请刷新页面重试。'}</div>`;
+  }
   if (st.archiveMode) {
     return html`
 <div style="position:sticky;top:0;z-index:60;display:flex;align-items:center;gap:9px;flex-wrap:wrap;background:#1B2A21;color:#D8E2D5;padding:7px calc(14px + env(safe-area-inset-right)) 7px calc(14px + env(safe-area-inset-left));font-size:11.5px;border-bottom:1px solid #0E1B15">

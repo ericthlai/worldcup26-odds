@@ -37,6 +37,7 @@ node test/fixtures.test.mjs
 node --test test/lifecycle.test.mjs
 node --test test/markets-lifecycle.test.mjs
 node --test test/app-lifecycle.test.mjs
+node --test test/worker-errors.test.mjs
 ```
 
 These run on every push via GitHub Actions. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
