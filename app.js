@@ -320,7 +320,6 @@ function shortName(code, lang) {
   lang = lang || CUR_LANG;
   return (lang === 'en' && EN_TEAM[code]) ? EN_TEAM[code] : t[0];
 }
-function venName(v, idx) { var V = WC.VEN[v]; return V ? V[idx] : v; }
 function cityName(v, lang) {
   lang = lang || CUR_LANG;
   if (lang === 'en' && EN_CITY[v]) return EN_CITY[v];
@@ -1754,8 +1753,6 @@ App.prototype.renderWhatif = function (T, lang) {
   var open = st._whatifOpen;
   var activeCount = Object.keys(st.lockGroup).length + Object.keys(st.lockMatch).length;
 
-  // group winner picker options
-  var groupOpts = [{ v: '', label: T.noGroup }];
   // match picker: knockout matches (real bracket) for locking winners is complex
   // because sides resolve dynamically; we expose the simplest, highest-value
   // lever — lock a GROUP WINNER — plus a clear-all. (Knockout result locks are
