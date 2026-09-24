@@ -85,6 +85,11 @@ test/               engine/model contracts + no-network lifecycle integration
 dev/                reference copy of the sister prediction app (provenance only)
 ```
 
+## How this was built
+- **I decided:** the match model (an Elo gap turned into independent Poisson goal counts with a Dixon-Coles low-score correction), calibrating title odds to Polymarket's de-vigged champion market, using the FIFA Annex C table as the source of truth for third-place slots, and the scope limits listed below.
+- **The agent generated:** a large share of the implementation. 4 of 12 commits carry a Claude co-author trailer; not every agent session leaves one, so treat that count as a lower bound.
+- **I verified:** with the three test scripts under `test/` (engine checks, self-checks, and an adversarial comparison against official Annex C rows), run in CI on every push and pull request.
+
 ## Known limitations
 
 - This archive preserves a pre-tournament counterfactual model. It does not ingest or display actual 2026 results, and should not be read as a retrospective prediction scorecard.
