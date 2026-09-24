@@ -40,7 +40,7 @@ node --test test/app-lifecycle.test.mjs
 node --test test/worker-errors.test.mjs
 ```
 
-These run on every push via GitHub Actions. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
+GitHub Actions runs these on every pull request and on every push to `main`. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
 
 ## The four views
 
@@ -56,7 +56,7 @@ Plus a **What-if** panel: assume a group winner and recompute the downstream mod
 | Layer | What it does |
 |---|---|
 | **Ratings** | Hardcoded World-Football-Elo-style ratings for all 48 teams (`data.js`, `ELO`). The model snapshot is static and is not updated with actual results. |
-| **Match model** | Elo gap → goal supremacy → two independent Poisson goal counts → score grid → W/D/L, with a Dixon-Coles low-score correction (ρ = −0.11) so draws land at a realistic ~25–28%. Knockout draws resolve via a penalty coin-flip nudged to the stronger side. Host advantage (+100 Elo) applies to all three co-hosts' (USA/Mexico/Canada) group matches and to all knockout matches. |
+| **Match model** | Elo gap → goal supremacy → two independent Poisson goal counts → score grid → W/D/L, with a Dixon-Coles low-score correction (ρ = −0.11) so draws land at a realistic ~25–28%. Knockout draws resolve via a penalty coin-flip nudged to the stronger side. Host advantage (+100 Elo) applies only when a co-host (USA/Mexico/Canada) plays in its own country: all three co-hosts' group matches, plus any knockout match a co-host plays at a home venue. |
 | **Tournament** | `simulate()` runs N = 20,000 tournaments (seeded `mulberry32`) in a Web Worker. Group round-robin with FIFA tiebreakers → top-2 auto-advance + 8 best third-placed → **FIFA Annex C** assignment of thirds to Round-of-32 slots → single-elimination to the final. Accumulates per-team stage-reach and per-slot matchup co-occurrence counters; every probability is a Monte-Carlo frequency. |
 | **Best-third** | Uses the **literal 495-row FIFA Annex C lookup table** (`data.js`, `ANNEXC_TABLE`), transcribed from the official FIFA 2026 Competition Regulations PDF. (Eligibility + bipartite matching alone does **not** uniquely reproduce FIFA's published assignment — most qualifying sets admit several legal matchings.) |
 | **Historical market blend** | Before the archive cutoff, an open champion market seeds a temperature + per-team Elo-delta fit. R16/QF/SF/Final baskets then refine the same Elo-delta vector through `calibrateReach()`. The R32/to-advance basket is comparison-only. De-vigged W/D/L prices can override the 52 mapped group fixtures. |
@@ -87,13 +87,13 @@ dev/                reference copy of the sister prediction app (provenance only
 
 ## How this was built
 - **I decided:** the match model (an Elo gap turned into independent Poisson goal counts with a Dixon-Coles low-score correction), calibrating title odds to Polymarket's de-vigged champion market, using the FIFA Annex C table as the source of truth for third-place slots, and the scope limits listed below.
-- **The agents generated:** a large share of the implementation (Claude Code, later OpenAI Codex). 4 of 20 commits carry a co-author trailer; not every agent session leaves one, so treat that count as a lower bound.
-- **I verified:** with the suites under `test/` (engine checks, self-checks, an adversarial comparison against official Annex C rows, fixture coverage, and no-network lifecycle and worker-failure integration tests), run in CI on every push and pull request.
+- **The agents generated:** a large share of the implementation (Claude Code, later OpenAI Codex). As of 2026-09-24, only the first 4 commits carry a co-author trailer; not every agent session leaves one, so treat that count as a lower bound.
+- **I verified:** with the suites under `test/` (engine checks, self-checks, an adversarial comparison against official Annex C rows, fixture coverage, and no-network lifecycle and worker-failure integration tests), run in CI on every push to `main` and on every pull request.
 
 ## Known limitations
 
 - This archive preserves a pre-tournament counterfactual model. It does not ingest or display actual 2026 results, and should not be read as a retrospective prediction scorecard.
-- Host-country advantage is represented as a fixed +100 Elo adjustment for all three co-hosts' group matches and every knockout match. `WC.GM` lists all 72 group fixtures (`test/fixtures.test.mjs` guards this).
+- Host-country advantage is represented as a fixed +100 Elo adjustment whenever a co-host plays in its own country (all three co-hosts' group matches, plus any knockout match a co-host plays at a home venue). `WC.GM` lists all 72 group fixtures (`test/fixtures.test.mjs` guards this).
 - The group-winner what-if is an approximation: it force-wins all three of the selected team's group matches rather than applying a literal final-table constraint.
 - Historical Polymarket W/D/L overrides map 52 group fixtures. The other 20 use the Elo model; what-if group-winner assumptions still work across all 72. The archived experience does not fetch either set.
 - Group tiebreaks use points, then goal difference, then goals scored, then Elo as a stand-in for fair play / drawing of lots. The official FIFA head-to-head step (used when teams are level on all three of the above) is not implemented, so some ties that FIFA would break by head-to-head record are instead broken by rating.
