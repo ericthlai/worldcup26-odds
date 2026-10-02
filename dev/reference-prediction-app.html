@@ -70,6 +70,7 @@ const NAME2CODE = {
   'England':'eng','Croatia':'cro','Ghana':'gha','Panama':'pan'
 };
 const GAMMA = 'https://gamma-api.polymarket.com';
+const ARCHIVE_START_MS = Date.parse('2026-07-20T00:00:00Z'); // same cutoff as lifecycle.js
 
 class App extends Component {
   constructor(props){
@@ -203,6 +204,7 @@ class App extends Component {
     return null;
   }
   async fetchOdds(){
+    if (Date.now() >= ARCHIVE_START_MS) return;
     if (this._fetching) return;
     this._fetching = true;
     try {

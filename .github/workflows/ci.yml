@@ -30,3 +30,4 @@ jobs:
           node --test test/markets-lifecycle.test.mjs
           node --test test/app-lifecycle.test.mjs
           node --test test/worker-errors.test.mjs
+          node --test test/dev-reference-archive.test.mjs
