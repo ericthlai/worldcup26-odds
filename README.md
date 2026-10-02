@@ -37,6 +37,7 @@ node test/fixtures.test.mjs
 node --test test/lifecycle.test.mjs
 node --test test/markets-lifecycle.test.mjs
 node --test test/app-lifecycle.test.mjs
+node --test test/dev-reference-archive.test.mjs
 node --test test/worker-errors.test.mjs
 ```
 
@@ -82,7 +83,7 @@ app.js              Preact UI — the four views, status bar, what-if
 THIRD_PARTY_NOTICES.md  verified vendored-bundle hashes and licenses
 LICENSES/           complete upstream MIT and Apache-2.0 license texts
 test/               engine/model contracts + no-network lifecycle integration
-dev/                reference copy of the sister prediction app (provenance only)
+dev/                reference copy of the sister prediction app (provenance only; market polling disabled after the archive cutoff; not wired to the vendored bundles)
 ```
 
 ## How this was built
