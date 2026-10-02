@@ -9,7 +9,9 @@
  *   - Goal model: two independent Poisson(0..10) -> score grid, with
  *     Dixon-Coles low-score correction (rho=-0.11) to lift draws.
  *   - Knockout draws resolved by a penalty model.
- *   - Group: round-robin, FIFA tiebreakers (Pts>GD>GF>Elo).
+ *   - Group: round-robin; FIFA Article 13 tiebreakers (Pts, then head-to-head
+ *     Pts/GD/GF, then overall GD/GF; Elo stands in for conduct score and FIFA
+ *     ranking). Best-3rd ranking uses Pts>GD>GF>Elo.
  *   - Best-3rd: rank 12 thirds, take 8, then look up FIFA's published Annex C
  *     row (literal 495-row table from WC.ANNEXC_TABLE) for the slot assignment.
  *     A greedy eligibility matcher is kept only as a last-resort fallback.
@@ -314,16 +316,84 @@
   }
 
   // -------------------------------------------------------------------------
-  // Group tiebreaker comparison. Returns negative if a ranks ABOVE b.
-  // Order: Points > Goal Difference > Goals For > higher Elo (proxy for
-  // fair-play / drawing of lots).
-  // st: per-team {pts, gd, gf}. elo: per-team Elo.
+  // Group ranking per FIFA World Cup 26 Regulations, Article 13.
+  //   1. Points over all group matches.
+  //   2. Among teams level on points: head-to-head points, then head-to-head
+  //      goal difference, then head-to-head goals scored, using only the
+  //      matches played between those teams. If that leaves a subset of teams
+  //      still level (and smaller than the set just ranked), the same
+  //      head-to-head criteria are reapplied to the matches among that subset.
+  //   3. If still level: overall goal difference, then overall goals scored.
+  //   4. Team conduct score and FIFA ranking are not modelled; higher Elo
+  //      stands in for both.
+  // The best-third ranking across groups does not use head-to-head (teams
+  // from different groups have not met): points, GD, GF, then Elo (see simulate).
+  // results: [{a, b, ga, gb}] for the group's matches. st: per-team
+  // {pts, gd, gf} (computed from results when omitted). elo: per-team Elo.
   // -------------------------------------------------------------------------
-  function cmpTeam(a, b, st, elo) {
-    if (st[b].pts !== st[a].pts) return st[b].pts - st[a].pts;
-    if (st[b].gd !== st[a].gd) return st[b].gd - st[a].gd;
-    if (st[b].gf !== st[a].gf) return st[b].gf - st[a].gf;
-    return elo[b] - elo[a];
+  function groupStats(teams, results) {
+    var st = {};
+    for (var i = 0; i < teams.length; i++) st[teams[i]] = { pts: 0, gd: 0, gf: 0 };
+    for (var r = 0; r < results.length; r++) {
+      var m = results[r], a = st[m.a], b = st[m.b];
+      a.gf += m.ga; b.gf += m.gb;
+      a.gd += m.ga - m.gb; b.gd += m.gb - m.ga;
+      if (m.ga > m.gb) a.pts += 3;
+      else if (m.ga < m.gb) b.pts += 3;
+      else { a.pts += 1; b.pts += 1; }
+    }
+    return st;
+  }
+
+  // Order `set` (teams level on the previous criteria) by head-to-head record.
+  function rankTied(set, results, st, elo) {
+    if (set.length < 2) return set.slice();
+    var inSet = {};
+    for (var i = 0; i < set.length; i++) inSet[set[i]] = true;
+    var sub = results.filter(function (m) { return inSet[m.a] && inSet[m.b]; });
+    var h2h = groupStats(set, sub);
+    var ordered = set.slice().sort(function (x, y) {
+      if (h2h[y].pts !== h2h[x].pts) return h2h[y].pts - h2h[x].pts;
+      if (h2h[y].gd !== h2h[x].gd) return h2h[y].gd - h2h[x].gd;
+      return h2h[y].gf - h2h[x].gf;
+    });
+    var out = [];
+    var j = 0;
+    while (j < ordered.length) {
+      var k = j + 1;
+      while (k < ordered.length &&
+             h2h[ordered[k]].pts === h2h[ordered[j]].pts &&
+             h2h[ordered[k]].gd === h2h[ordered[j]].gd &&
+             h2h[ordered[k]].gf === h2h[ordered[j]].gf) k++;
+      var cls = ordered.slice(j, k);
+      if (cls.length === set.length) {
+        // Head-to-head separates nobody: overall GD, overall GF, then Elo.
+        cls.sort(function (x, y) {
+          if (st[y].gd !== st[x].gd) return st[y].gd - st[x].gd;
+          if (st[y].gf !== st[x].gf) return st[y].gf - st[x].gf;
+          return elo[y] - elo[x];
+        });
+        out = out.concat(cls);
+      } else {
+        out = out.concat(rankTied(cls, results, st, elo));
+      }
+      j = k;
+    }
+    return out;
+  }
+
+  function rankGroup(teams, results, st, elo) {
+    st = st || groupStats(teams, results);
+    var byPts = teams.slice().sort(function (x, y) { return st[y].pts - st[x].pts; });
+    var out = [];
+    var j = 0;
+    while (j < byPts.length) {
+      var k = j + 1;
+      while (k < byPts.length && st[byPts[k]].pts === st[byPts[j]].pts) k++;
+      out = out.concat(rankTied(byPts.slice(j, k), results, st, elo));
+      j = k;
+    }
+    return out;
   }
 
   // -------------------------------------------------------------------------
@@ -453,6 +523,7 @@
         var g = GROUP_LETTERS[gi2];
         var teams = WC.GROUPS[g];
         var st = {};
+        var gres = [];
         for (var ti = 0; ti < 4; ti++) st[teams[ti]] = { pts: 0, gd: 0, gf: 0 };
         var fix = groupFixtures[g];
         for (var fi = 0; fi < fix.length; fi++) {
@@ -502,13 +573,14 @@
 
           // record
           var a1 = st[t1], a2 = st[t2];
+          gres.push({ a: t1, b: t2, ga: ga, gb: gb });
           a1.gf += ga; a2.gf += gb; a1.gd += (ga - gb); a2.gd += (gb - ga);
           if (ga > gb) a1.pts += 3;
           else if (ga < gb) a2.pts += 3;
           else { a1.pts += 1; a2.pts += 1; }
         }
         // rank the 4 teams
-        var ordered = teams.slice().sort(function (a, b) { return cmpTeam(a, b, st, elo); });
+        var ordered = rankGroup(teams, gres, st, elo);
         ranks[g] = ordered;
         // top 2 reached R32
         cnt.r32[teamIdx[ordered[0]]]++;
@@ -1035,6 +1107,7 @@
     setAnnexCTable: setAnnexCTable,
     verifyAnnexC: verifyAnnexC,
     mulberry32: mulberry32,
+    rankGroup: rankGroup,
     _SLOTS: SLOTS
   };
 

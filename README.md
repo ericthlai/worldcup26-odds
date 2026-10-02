@@ -38,6 +38,7 @@ node --test test/lifecycle.test.mjs
 node --test test/markets-lifecycle.test.mjs
 node --test test/app-lifecycle.test.mjs
 node --test test/worker-errors.test.mjs
+node --test test/group-tiebreak.test.mjs
 ```
 
 GitHub Actions runs these on every pull request and on every push to `main`. The lifecycle integration suites use deterministic clocks, timers and local fixtures; they do not call the live Gamma API.
@@ -96,7 +97,7 @@ dev/                reference copy of the sister prediction app (provenance only
 - Host-country advantage is represented as a fixed +100 Elo adjustment whenever a co-host plays in its own country (all three co-hosts' group matches, plus any knockout match a co-host plays at a home venue). `WC.GM` lists all 72 group fixtures (`test/fixtures.test.mjs` guards this).
 - The group-winner what-if is an approximation: it force-wins all three of the selected team's group matches rather than applying a literal final-table constraint.
 - Historical Polymarket W/D/L overrides map 52 group fixtures. The other 20 use the Elo model; what-if group-winner assumptions still work across all 72. The archived experience does not fetch either set.
-- Group tiebreaks use points, then goal difference, then goals scored, then Elo as a stand-in for fair play / drawing of lots. The official FIFA head-to-head step (used when teams are level on all three of the above) is not implemented, so some ties that FIFA would break by head-to-head record are instead broken by rating.
+- Group tiebreaks follow FIFA World Cup 26 Regulations Article 13: points, then head-to-head points, goal difference and goals scored among the tied teams (reapplied to teams still level), then overall goal difference and goals scored. Team conduct score and FIFA ranking are not modelled; Elo stands in for both. The best-third ranking across groups uses points, goal difference, goals scored, then Elo.
 - The historical market fit was not validated out of sample; it was designed to align with market ordering, not beat the market. The reach-stage pass uses one shared Elo-delta vector, so it cannot independently match every stage marginal. **Not betting advice.**
 - De-vigging is a simple proportional (sum-to-1) normalization, not a more accurate method (e.g. Shin's); it can slightly over- or under-correct heavy favorites vs. longshots.
 - Elo ratings are a static late-2025/mid-2026 approximation (see the `data.js` header). The archived app does not refresh them.
