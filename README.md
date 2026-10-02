@@ -1,4 +1,4 @@
-# WorldcupOdds — World Cup 2026 probability archive
+# worldcup26-odds — World Cup 2026 probability archive
 
 **Archived demo:** https://ericthlai.github.io/worldcup26-odds/
 
