@@ -1,5 +1,5 @@
 /* ============================================================================
- * app.js — WorldcupOdds front-end (Preact + htm, no build step).
+ * app.js — worldcup26-odds front-end (Preact + htm, no build step).
  *
  * PURPOSE: preserve an explorable World Cup 2026 probability model and make
  * its assumptions, lifecycle and historical market calibration explicit.
